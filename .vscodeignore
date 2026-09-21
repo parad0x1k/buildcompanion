@@ -1,0 +1,35 @@
+# TypeScript sources — compiled output is in out/
+src/
+extension.ts
+tsconfig.json
+
+# Source maps — keep .js only for distribution
+**/*.js.map
+
+# Design and internal documentation
+design-docs/
+
+# Audit and dependency reports
+audit-fix-dry-run.json
+audit-report.json
+outdated-report.json
+deps-top.txt
+
+# VS Code workspace configuration
+.vscode/
+.github/
+.gitignore
+
+# Generated packages
+*.vsix
+
+# Unused resource image variants (only resources/marketplace-icon.png and resources/codebuild.svg are referenced)
+resources/marketplace-icon.svg
+resources/marketplace-icon1.png
+resources/Media.jpeg
+resources/icon-drafts/
+
+# Dev tooling
+.eslintrc*
+.prettierrc*
+.editorconfig

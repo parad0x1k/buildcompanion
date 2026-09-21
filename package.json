@@ -1,0 +1,346 @@
+{
+  "name": "codebuild-control-panel",
+  "version": "1.1.0",
+  "displayName": "BuildCompanion for AWS CodeBuild",
+  "description": "Trigger, monitor, and debug AWS CodeBuild projects directly from VS Code",
+  "main": "./out/extension.js",
+  "publisher": "r3scue",
+  "icon": "resources/marketplace-icon.png",
+  "markdown": "github",
+  "qna": "https://github.com/r3scue/codebuildcontrolpanel/issues",
+  "homepage": "https://github.com/r3scue/codebuildcontrolpanel#readme",
+  "bugs": {
+    "url": "https://github.com/r3scue/codebuildcontrolpanel/issues"
+  },
+  "galleryBanner": {
+    "color": "#232F3E",
+    "theme": "dark"
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "BuildCompanion runs git and AWS deployment commands on behalf of the user; running it in an untrusted workspace could expose AWS credentials or trigger unintended deployments."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "BuildCompanion requires local file system and credential access; virtual workspaces are not supported."
+    }
+  },
+  "categories": [
+    "Cloud",
+    "Other"
+  ],
+  "pricing": "Free",
+  "keywords": [
+    "buildcompanion",
+    "aws",
+    "codebuild",
+    "devops",
+    "ci",
+    "build",
+    "cloud",
+    "aws codebuild",
+    "deployment",
+    "logs",
+    "aws tools",
+    "vscode aws"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/r3scue/codebuildcontrolpanel.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=20.0.0"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "codebuild.switchProfile",
+        "title": "Switch Profile",
+        "category": "BuildCompanion"
+      },
+      {
+        "command": "codebuild.switchRegion",
+        "title": "Switch Region",
+        "category": "BuildCompanion"
+      },
+      {
+        "command": "codebuild.refresh",
+        "title": "Refresh",
+        "category": "BuildCompanion",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "codebuild.searchProjects",
+        "title": "Search Projects",
+        "category": "BuildCompanion",
+        "icon": "$(search)"
+      },
+      {
+        "command": "codebuild.clearProjectSearch",
+        "title": "Clear Project Search",
+        "category": "BuildCompanion",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "codebuild.toggleAutoRefresh",
+        "title": "Toggle Auto-Refresh",
+        "category": "BuildCompanion",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "codebuild.setTemporaryCredentials",
+        "title": "Set AWS Credentials",
+        "category": "BuildCompanion"
+      },
+      {
+        "command": "codebuild.triggerBuild",
+        "title": "Trigger Build",
+        "category": "BuildCompanion",
+        "icon": "$(play)"
+      },
+      {
+        "command": "codebuild.cancelBuild",
+        "title": "Cancel Build",
+        "category": "BuildCompanion",
+        "icon": "$(close)"
+      },
+      {
+        "command": "codebuild.cancelAllBuilds",
+        "title": "Cancel All Builds",
+        "category": "BuildCompanion",
+        "icon": "$(close-all)"
+      },
+      {
+        "command": "codebuild.viewLogs",
+        "title": "View Logs",
+        "category": "BuildCompanion",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "codebuild.selectAllProjects",
+        "title": "Select All Visible Projects",
+        "category": "BuildCompanion",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "codebuild.deployAll",
+        "title": "Deploy Selected Projects",
+        "category": "BuildCompanion",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "codebuild.setBranch",
+        "title": "Set Branch",
+        "category": "BuildCompanion",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "codebuild.clearAllBranches",
+        "title": "Clear All Saved Branches",
+        "category": "BuildCompanion",
+        "icon": {
+          "light": "resources/branch-clear-light.svg",
+          "dark": "resources/branch-clear-dark.svg"
+        }
+      },
+      {
+        "command": "codebuild.openTerminal",
+        "title": "Open AWS Setup Terminal",
+        "category": "BuildCompanion"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codebuild",
+          "title": "BuildCompanion",
+          "icon": "resources/codebuild.svg"
+        }
+      ]
+    },
+    "views": {
+      "codebuild": [
+        {
+          "id": "codebuildView",
+          "name": "BuildCompanion",
+          "icon": "resources/codebuild.svg"
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "codebuild.triggerBuild",
+          "when": "view == codebuildView && viewItem == project",
+          "group": "inline"
+        },
+        {
+          "command": "codebuild.setBranch",
+          "when": "view == codebuildView && viewItem == project",
+          "group": "inline"
+        },
+        {
+          "command": "codebuild.viewLogs",
+          "when": "view == codebuildView && viewItem == build",
+          "group": "inline@3"
+        },
+        {
+          "command": "codebuild.viewLogs",
+          "when": "view == codebuildView && viewItem == buildInProgress",
+          "group": "inline@2"
+        },
+        {
+          "command": "codebuild.cancelBuild",
+          "when": "view == codebuildView && viewItem == buildInProgress",
+          "group": "inline"
+        },
+        {
+          "command": "codebuild.triggerBuild",
+          "when": "view == codebuildView && viewItem == project",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codebuild.setBranch",
+          "when": "view == codebuildView && viewItem == project",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codebuild.deployAll",
+          "when": "view == codebuildView && viewItem == projectsRoot",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codebuild.refresh",
+          "when": "view == codebuildView && viewItem == project",
+          "group": "navigation"
+        },
+        {
+          "command": "codebuild.cancelBuild",
+          "when": "view == codebuildView && viewItem == buildInProgress",
+          "group": "navigation@2"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "codebuild.refresh",
+          "when": "view == codebuildView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codebuild.searchProjects",
+          "when": "view == codebuildView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codebuild.toggleAutoRefresh",
+          "when": "view == codebuildView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "codebuild.clearProjectSearch",
+          "when": "view == codebuildView",
+          "group": "navigation@4"
+        },
+        {
+          "command": "codebuild.cancelAllBuilds",
+          "when": "view == codebuildView",
+          "group": "navigation@5"
+        },
+        {
+          "command": "codebuild.selectAllProjects",
+          "when": "view == codebuildView && codebuild.canSelectMultipleProjects",
+          "group": "navigation@6"
+        },
+        {
+          "command": "codebuild.deployAll",
+          "when": "view == codebuildView",
+          "group": "navigation@7"
+        },
+        {
+          "command": "codebuild.clearAllBranches",
+          "when": "view == codebuildView && codebuild.hasSavedBranches",
+          "group": "navigation@8"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "BuildCompanion",
+      "properties": {
+        "codebuild.monitor.adaptivePolling": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically increases polling interval when many builds are active to reduce CPU and API pressure."
+        },
+        "codebuild.monitor.maxConcurrentStatusChecks": {
+          "type": "integer",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum number of active build status checks polled in parallel."
+        },
+        "codebuild.performanceDiagnostics.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable periodic performance diagnostics logs in the output channel."
+        },
+        "codebuild.logging.maxOutputLines": {
+          "type": "integer",
+          "default": 8000,
+          "minimum": 0,
+          "description": "Maximum number of lines retained in the output channel before older lines are cleared. Set to 0 to disable automatic clearing."
+        },
+        "codebuild.logging.verbose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show full profile, region, and build identifiers in output logs. Disabled by default to redact sensitive identifiers."
+        },
+        "codebuild.buildHistory.maxEntriesPerProject": {
+          "type": "integer",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Maximum number of build history entries retained per project in the tree view."
+        },
+        "codebuild.useFipsEndpoint": {
+          "type": "boolean",
+          "default": false,
+          "description": "Route AWS CodeBuild and CloudWatch Logs requests through FIPS 140-validated service endpoints (e.g. codebuild-fips.us-gov-west-1.amazonaws.com). Required by some compliance regimes (FedRAMP High, DoD IL4/5, CJIS). The AWS_USE_FIPS_ENDPOINT environment variable is honored when this setting is disabled. Note: this setting only affects the AWS service endpoint; the extension itself is not FIPS-validated, and the VS Code/Node.js runtime uses standard (non-validated) OpenSSL for client-side TLS."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint:repo": "tsc -p ./ --noEmit",
+    "test": "echo \"No tests configured yet\"",
+    "package": "vsce package",
+    "audit": "npm audit --omit=dev --audit-level=moderate",
+    "audit:fix": "npm audit fix --omit=dev",
+    "audit:production": "npm audit --production",
+    "audit:production:json": "npm audit --production --json",
+    "audit:production:fix-dry-run": "npm audit fix --production --dry-run --json"
+  },
+  "author": "r3scue",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/vscode": "1.85.0",
+    "@vscode/vsce": "^3.9.1",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudwatch-logs": "^3.1136.0",
+    "@aws-sdk/client-codebuild": "^3.1136.0",
+    "@aws-sdk/credential-providers": "^3.1136.0",
+    "@aws-sdk/types": "^3.974.5",
+    "@smithy/node-http-handler": "^4.12.1",
+    "fast-deep-equal": "^3.1.3"
+  }
+}
