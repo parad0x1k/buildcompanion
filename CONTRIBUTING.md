@@ -21,8 +21,8 @@ Prerequisites:
 Bootstrap:
 
 ```powershell
-git clone https://github.com/r3scue/codebuildcontrolpanel.git
-cd codebuildcontrolpanel
+git clone https://github.com/parad0x1k/buildcompanion.git
+cd buildcompanion
 npm install
 npm run compile
 ```

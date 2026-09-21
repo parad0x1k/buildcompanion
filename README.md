@@ -1,9 +1,9 @@
 # BuildCompanion for AWS CodeBuild
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/r3scue.codebuild-control-panel)](https://marketplace.visualstudio.com/items?itemName=r3scue.codebuild-control-panel)
-[![Installs](https://img.shields.io/visual-studio-marketplace/i/r3scue.codebuild-control-panel)](https://marketplace.visualstudio.com/items?itemName=r3scue.codebuild-control-panel)
-[![CI](https://github.com/r3scue/codebuildcontrolpanel/actions/workflows/ci.yml/badge.svg)](https://github.com/r3scue/codebuildcontrolpanel/actions/workflows/ci.yml)
+[![Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/parad0x1k.buildcompanion)](https://marketplace.visualstudio.com/items?itemName=parad0x1k.buildcompanion)
+[![Installs](https://img.shields.io/visual-studio-marketplace/i/parad0x1k.buildcompanion)](https://marketplace.visualstudio.com/items?itemName=parad0x1k.buildcompanion)
+[![CI](https://github.com/parad0x1k/buildcompanion/actions/workflows/ci.yml/badge.svg)](https://github.com/parad0x1k/buildcompanion/actions/workflows/ci.yml)
 
 BuildCompanion is a native VS Code extension to trigger, monitor, and debug AWS CodeBuild projects directly from your editor.
 
@@ -36,7 +36,7 @@ This extension is a community tool and has **not** been developed, tested, or va
 1. Open VS Code.
 2. Open Extensions.
 3. Select "Install from VSIX...".
-4. Choose a package file such as `codebuild-control-panel-1.1.0.vsix`.
+4. Choose a package file such as `buildcompanion-1.1.0.vsix`.
 5. Reload VS Code.
 
 ## Requirements

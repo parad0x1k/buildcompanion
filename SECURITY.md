@@ -4,8 +4,7 @@
 
 | Version | Supported |
 |---------|-----------|
-| 1.1.x   | ✅ Yes    |
-| 1.0.x   | ❌ No (please upgrade) |
+| 0.1.x   | ✅ Yes    |
 
 ## Reporting a Vulnerability
 
@@ -13,7 +12,7 @@ If you discover a security vulnerability in BuildCompanion for AWS CodeBuild, pl
 
 **How to report:**
 
-1. Open a [GitHub Security Advisory](https://github.com/r3scue/codebuildcontrolpanel/security/advisories/new) in this repository.
+1. Open a [GitHub Security Advisory](https://github.com/parad0x1k/buildcompanion/security/advisories/new) in this repository.
 2. Provide a clear description of the vulnerability, steps to reproduce, and the potential impact.
 3. You will receive an acknowledgement within **3 business days** and a resolution timeline within **14 business days** for confirmed vulnerabilities.
 
