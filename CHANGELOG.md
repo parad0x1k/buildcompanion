@@ -26,6 +26,7 @@ All notable changes to BuildCompanion for AWS CodeBuild are documented in this f
 - Continuous Integration workflow (`.github/workflows/ci.yml`), Dependabot configuration (`.github/dependabot.yml`), and GitHub issue templates (V11-022, V11-023, V11-024, V11-220).
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), and a `.gitignore` covering build outputs, `.vsix` artefacts, audit reports, and OS metadata (V11-020, V11-021, V11-221, V11-222).
 - README marketplace badges and a "Privacy & Telemetry" section confirming the extension makes no network calls outside AWS endpoints and collects no telemetry (V11-040, V11-224).
+- `THIRD_PARTY_NOTICES.md` documenting the Apache-2.0 (`@aws-sdk/*`, `@smithy/*`, `@aws/lambda-invoke-store`) and MIT (`fast-deep-equal`) licensed dependencies bundled into the packaged `.vsix`.
 
 ### Changed
 - Renamed the product/display branding from "CodeBuild Control Panel" to "BuildCompanion for AWS CodeBuild" to avoid implying an official AWS-provided extension. This updates `displayName`, the activity bar/view titles, the settings section title, the command palette category, and the output channel name. All command IDs, configuration keys, and stored state keys are unchanged for backward compatibility.
