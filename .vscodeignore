@@ -29,6 +29,9 @@ resources/marketplace-icon1.png
 resources/Media.jpeg
 resources/icon-drafts/
 
+# README demo GIFs — large captures rendered from GitHub via "markdown": "github", excluded from the packaged extension
+resources/gifs/
+
 # Dev tooling
 .eslintrc*
 .prettierrc*

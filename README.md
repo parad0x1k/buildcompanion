@@ -9,6 +9,16 @@ BuildCompanion is a native VS Code extension to trigger, monitor, and debug AWS 
 
 > BuildCompanion is an independent, community-built open-source project. It is not affiliated with, endorsed by, or sponsored by Amazon Web Services (AWS). "AWS" and "CodeBuild" are trademarks of Amazon.com, Inc. or its affiliates.
 
+## Demo
+
+### Trigger a Single Build
+
+![Trigger a single build, watch it run, and open its logs from the BuildCompanion tree view](resources/gifs/single-build-demo.gif)
+
+### Batch Deploy Multiple Projects
+
+![Select multiple projects and run a sequential batch deployment](resources/gifs/batch-deploy-demo.gif)
+
 ## Privacy & Telemetry
 
 This extension makes **no network calls outside the AWS endpoints implied by the active profile and region**. It collects **no telemetry** and ships **no analytics SDK**. The `telemetry.telemetryLevel` VS Code setting is respected by default (no-op since no telemetry is sent). All AWS credentials live in your local AWS configuration files or in VS Code's encrypted Secret Storage; they are never written to logs, never transmitted to third parties, and never persisted in plaintext.
