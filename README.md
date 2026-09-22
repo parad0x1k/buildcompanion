@@ -1,9 +1,8 @@
 # BuildCompanion for AWS CodeBuild
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/parad0x1k.buildcompanion)](https://marketplace.visualstudio.com/items?itemName=parad0x1k.buildcompanion)
-[![Installs](https://img.shields.io/visual-studio-marketplace/i/parad0x1k.buildcompanion)](https://marketplace.visualstudio.com/items?itemName=parad0x1k.buildcompanion)
 [![CI](https://github.com/parad0x1k/buildcompanion/actions/workflows/ci.yml/badge.svg)](https://github.com/parad0x1k/buildcompanion/actions/workflows/ci.yml)
+[![Install from Marketplace](https://img.shields.io/badge/VS%20Marketplace-Install-blue)](https://marketplace.visualstudio.com/items?itemName=parad0x1k.buildcompanion)
 
 BuildCompanion is a native VS Code extension to trigger, monitor, and debug AWS CodeBuild projects directly from your editor.
 

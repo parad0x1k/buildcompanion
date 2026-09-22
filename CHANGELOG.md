@@ -2,7 +2,9 @@
 
 All notable changes to BuildCompanion for AWS CodeBuild are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] — 2026-09-21
+## [Unreleased]
+
+## [0.1.0] — 2026-09-22
 
 ### Added
 - Tree view with real-time CodeBuild project list, active build monitor, and build history per project
@@ -27,20 +29,7 @@ All notable changes to BuildCompanion for AWS CodeBuild are documented in this f
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), and a `.gitignore` covering build outputs, `.vsix` artefacts, audit reports, and OS metadata (V11-020, V11-021, V11-221, V11-222).
 - README marketplace badges and a "Privacy & Telemetry" section confirming the extension makes no network calls outside AWS endpoints and collects no telemetry (V11-040, V11-224).
 - `THIRD_PARTY_NOTICES.md` documenting the Apache-2.0 (`@aws-sdk/*`, `@smithy/*`, `@aws/lambda-invoke-store`) and MIT (`fast-deep-equal`) licensed dependencies bundled into the packaged `.vsix`.
-
-### Changed
-- Renamed the product/display branding from "CodeBuild Control Panel" to "BuildCompanion for AWS CodeBuild" to avoid implying an official AWS-provided extension. This updates `displayName`, the activity bar/view titles, the settings section title, the command palette category, and the output channel name. All command IDs, configuration keys, and stored state keys are unchanged for backward compatibility.
-- Replaced all GitHub references from `r3scue/codebuildcontrolpanel` to `parad0x1k/buildcompanion` (README badges, the CI badge, `CONTRIBUTING.md` clone instructions, and the `SECURITY.md` advisory link).
-- Changed the extension identifier from `r3scue.codebuild-control-panel` to `parad0x1k.buildcompanion` (`publisher` and `name` fields in `package.json`, plus matching `repository`/`homepage`/`bugs`/`qna` URLs) and updated the `LICENSE` copyright holder to match. This extension has not yet been published to the Marketplace, so there is no backward-compatibility impact.
-- Lowered `engines.vscode` floor from `^1.110.0` to `^1.85.0` (and matching `@types/vscode`) to widen the installable user base. No 1.110-only API is in use (V11-210).
-- `npm run package` now bundles production dependencies into the `.vsix` (dropped `--no-dependencies`) so the published extension activates correctly on user machines (V11-201).
-- Repository `repository.url` normalised to canonical `git+https://...git` form (V11-004).
-
-### Security
-- Output channel `sanitizeLogValue` now strips all C0 control characters and DEL (in addition to CR/LF/TAB), preventing log forging via ANSI escapes or terminal-rendering tricks in untrusted identifiers (V11-010).
+- Output channel log sanitization (`sanitizeLogValue`) strips all C0 control characters and DEL, in addition to CR/LF/TAB, preventing log forging via ANSI escapes or terminal-rendering tricks in untrusted identifiers (V11-010).
 - Recent-log-lines buffer and shared output channel are now disposed on `deactivate()` so module-scope state does not survive `Developer: Reload Window` invocations (V11-011).
 - Unrecognised AWS SDK error names are now logged at `[ERROR]` (was `[INFO]`) so operators triaging failures see correlated diagnostics (V11-012).
 - AWS client cache eviction loop hardened against future TS strict-mode regressions (V11-013).
-
-### Removed
-- Stale `.vsix` artefacts at the repo root, the dead-stub root `extension.ts`, unused `resources/` image variants, and committed audit/dependency JSON reports (V11-207, V11-208, V11-211, V11-212).
