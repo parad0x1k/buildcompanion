@@ -1,6 +1,6 @@
 {
   "name": "buildcompanion",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "displayName": "BuildCompanion for AWS CodeBuild",
   "description": "Trigger, monitor, and debug AWS CodeBuild projects directly from VS Code",
   "main": "./out/extension.js",
