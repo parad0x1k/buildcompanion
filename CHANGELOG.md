@@ -4,6 +4,11 @@ All notable changes to BuildCompanion for AWS CodeBuild are documented in this f
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-09-22
+
+### Changed
+- Removed the `visual-studio-marketplace` version and installs README badges, which shields.io permanently retired (see [badges/shields#11792](https://github.com/badges/shields/pull/11792)); replaced with a static install link to the Marketplace listing.
+
 ## [0.1.0] — 2026-09-22
 
 ### Added
