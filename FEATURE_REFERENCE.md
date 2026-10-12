@@ -217,6 +217,8 @@ Default region resolution order:
 - List projects (`ListProjects`, paginated)
 - Start build (`StartBuild`) with optional `sourceVersion` branch
 - Retry build (`RetryBuild`) reusing an existing build's resolved source version and the project's current configuration
+  - The confirmation prompt shows the branch/source version being retried when the originating row (e.g. a Build History entry) carries it; otherwise it falls back to a generic description.
+  - The resolved source version from the `RetryBuild` response (normalized to `default` when none is set) is always shown in the post-retry notification, regardless of whether it was known beforehand.
 - Stop build (`StopBuild`)
 - Get one build status (`BatchGetBuilds`)
 - Get many build statuses in chunks of up to 100 IDs

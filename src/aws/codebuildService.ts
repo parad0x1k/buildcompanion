@@ -111,7 +111,7 @@ function normalizeInitiator(initiator?: string): string {
     return segments[segments.length - 1] ?? "unknown";
 }
 
-function normalizeSourceVersion(sourceVersion?: string): string {
+export function normalizeSourceVersion(sourceVersion?: string): string {
     const normalized = sourceVersion?.trim();
     return normalized && normalized.length > 0 ? normalized : "default";
 }
@@ -560,12 +560,14 @@ export async function listRecentBuildHistoryForProject(
     }
 }
 
+export type RetryBuildResult = BuildState & { sourceVersion: string };
+
 export async function retryBuild(
     profile: string,
     region: string,
     buildId: string,
     options?: CodeBuildServiceOptions
-): Promise<BuildState> {
+): Promise<RetryBuildResult> {
     validateScope(profile, region);
 
     const normalizedBuildId = buildId.trim();
@@ -587,7 +589,10 @@ export async function retryBuild(
             throw new Error("RetryBuild did not return a valid build payload");
         }
 
-        return buildState;
+        return {
+            ...buildState,
+            sourceVersion: normalizeSourceVersion(response.build?.sourceVersion)
+        };
     } catch (error) {
         throw toReadableError(error, {
             profile,

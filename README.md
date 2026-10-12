@@ -199,8 +199,9 @@ Supported regions are fixed in this version. See [FEATURE_REFERENCE.md](FEATURE_
 
 1. Expand a project under Build History (or find a completed build in Active Builds).
 2. Use the retry inline action (or `Retry Build` from the Command Palette) on a completed build.
-3. Confirm the prompt. A new build starts using the original build's source version and the project's current configuration.
-4. If a build is already in progress for that project, you are asked to confirm before starting a second, concurrent build.
+3. Confirm the prompt, which names the branch/source version being retried when known. A new build starts using the original build's source version and the project's current configuration.
+4. A notification confirms the branch/source version the retry actually used, resolved from the `RetryBuild` response (shown as `default` when the project's default source version was used).
+5. If a build is already in progress for that project, you are asked to confirm before starting a second, concurrent build.
 
 ### Edit Project Environment Variables
 

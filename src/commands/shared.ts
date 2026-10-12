@@ -17,6 +17,8 @@ export type BuildArg = {
     status?: BuildState["status"];
     profile: string;
     region: string;
+    /** Resolved source version/branch, when the caller (e.g. a Build History row) has it available. */
+    sourceVersion?: string;
 };
 
 export type BranchPickItem = {

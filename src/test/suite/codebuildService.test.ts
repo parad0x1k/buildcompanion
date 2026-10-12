@@ -90,18 +90,29 @@ describe("aws/codebuildService", () => {
     });
 
     describe("retryBuild", () => {
-        it("maps a successful RetryBuild response to BuildState", async () => {
+        it("maps a successful RetryBuild response to BuildState, including the resolved source version", async () => {
             codeBuildMock.on(RetryBuildCommand).resolves({
-                build: { id: "demo:999", projectName: "demo", buildStatus: "IN_PROGRESS" }
+                build: { id: "demo:999", projectName: "demo", buildStatus: "IN_PROGRESS", sourceVersion: "feature/my-branch" }
             });
 
             const build = await retryBuild("dev", "us-east-1", "demo:111");
 
             assert.equal(build.id, "demo:999");
             assert.equal(build.status, "IN_PROGRESS");
+            assert.equal(build.sourceVersion, "feature/my-branch");
 
             const calls = codeBuildMock.commandCalls(RetryBuildCommand);
             assert.equal(calls[calls.length - 1].args[0].input.id, "demo:111");
+        });
+
+        it("normalizes a missing source version to 'default'", async () => {
+            codeBuildMock.on(RetryBuildCommand).resolves({
+                build: { id: "demo:1000", projectName: "demo", buildStatus: "IN_PROGRESS" }
+            });
+
+            const build = await retryBuild("dev", "us-east-1", "demo:111");
+
+            assert.equal(build.sourceVersion, "default");
         });
 
         it("surfaces the required IAM permission when access is denied", async () => {

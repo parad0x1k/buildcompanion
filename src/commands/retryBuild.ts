@@ -6,6 +6,7 @@ import { logError, sanitizeLogValue } from "../logging/outputChannelManager";
 import { formatProjectScope, formatScope, notify } from "../notifications/notifier";
 import {
     formatSanitizedScope,
+    notifyDeploymentTriggered,
     resolveBuildFromArg,
     sanitizeBuildId,
     setProjectStatus,
@@ -70,7 +71,9 @@ export async function retryBuild(
         `Retry build ${shortenId(buildId)} for ${formatProjectScope(projectName, profile, region)}?`,
         {
             modal: true,
-            detail: "This starts a new build using the same source version and project configuration as the original build.",
+            detail: selectedBuild.sourceVersion
+                ? `This starts a new build for branch/source version '${selectedBuild.sourceVersion}', using the project's current configuration.`
+                : "This starts a new build using the same source version and project configuration as the original build.",
             actions: ["Retry Build"]
         }
     );
@@ -95,6 +98,7 @@ export async function retryBuild(
             store.setProjects(setProjectStatus(latestState.projects, projectName, build.status));
         });
 
+        notifyDeploymentTriggered(projectName, profile, region, build.sourceVersion);
         showShortStatusMessage(`Build retry started for ${formatProjectScope(projectName, profile, region)}`);
         warnCompletionPopupsPaused(state);
     } catch (error) {
