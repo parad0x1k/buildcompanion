@@ -33,6 +33,10 @@ export type LogsServiceOptions = CodeBuildServiceOptions & {
     recentLineBufferSize?: number;
     logLocationTimeoutMs?: number;
     onFailureSummary?: (summary: string) => void;
+    /** Called with newly formatted log lines as they arrive, in addition to the shared output channel. */
+    onLogLines?: (lines: string[]) => void;
+    /** Called once streaming ends normally (build reached a terminal state), with its final status. */
+    onComplete?: (status: BuildStatus) => void;
     signal?: AbortSignal;
 };
 
@@ -141,13 +145,18 @@ export function disposeLogsStreaming(): void {
     stopActiveLogStream();
 }
 
-function appendLogMessage(timestamp: number | undefined, message: string): void {
+function appendLogMessage(timestamp: number | undefined, message: string): string[] {
     const prefix = timestamp ? `[${new Date(timestamp).toISOString()}] ` : "";
     const lines = message.replace(/\r\n/g, "\n").split("\n");
+    const formattedLines: string[] = [];
 
     for (const line of lines) {
-        logInfo(`[LOGS] ${prefix}${line}`);
+        const formattedLine = `${prefix}${line}`;
+        logInfo(`[LOGS] ${formattedLine}`);
+        formattedLines.push(formattedLine);
     }
+
+    return formattedLines;
 }
 
 function pushRecentLogLine(buffer: string[], line: string, maxSize: number): void {
@@ -290,9 +299,10 @@ export async function streamBuildLogs(
                 nextForwardToken = response.nextForwardToken;
 
                 if (events.length > 0) {
+                    const viewerLines: string[] = [];
                     for (const event of events) {
                         const message = event.message ?? "";
-                        appendLogMessage(event.timestamp, message);
+                        viewerLines.push(...appendLogMessage(event.timestamp, message));
 
                         const normalizedLines = message.replace(/\r\n/g, "\n").split("\n");
                         for (const line of normalizedLines) {
@@ -303,6 +313,9 @@ export async function streamBuildLogs(
                             pushRecentLogLine(recentLogLines, trimmed, recentLineBufferSize);
                         }
                     }
+                    // Forwarded once per poll response (not per line/event) so a large page of
+                    // CloudWatch events collapses into a single viewer update.
+                    options?.onLogLines?.(viewerLines);
                     emptyPolls = 0;
                 } else {
                     emptyPolls += 1;
@@ -392,6 +405,7 @@ export async function streamBuildLogs(
             }
         }
 
+        options?.onComplete?.(buildStatus);
         logInfo(`[LOGS] Finished streaming logs for build ${sanitizedBuildId}`);
     } catch (error) {
         if (isLogStreamingCancellationError(error)) {

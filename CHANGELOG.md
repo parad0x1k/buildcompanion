@@ -4,6 +4,17 @@ All notable changes to BuildCompanion for AWS CodeBuild are documented in this f
 
 ## [Unreleased]
 
+### Added
+- Automated test suite (`@vscode/test-cli` + `@vscode/test-electron` + Mocha, with `aws-sdk-client-mock` for AWS SDK v3 boundaries) covering services, state, command wiring, and the new log viewer. Run with `npm test`; wired into CI (`.github/workflows/ci.yml`) via `xvfb-run -a npm test`. See [CONTRIBUTING.md](CONTRIBUTING.md#testing).
+- `Retry Build` action (`codebuild.retryBuild`) on completed/historical build rows in Build History, using the CodeBuild `RetryBuild` API to restart a build with its original source version and the project's current configuration. Requires `codebuild:RetryBuild`.
+- Dedicated, scrollable per-build log viewer: `View Logs` now opens a read-only editor document (beside the current editor) instead of only the shared output channel. Updates are throttled (coalesced to at most one refresh every 300ms) and retention-capped (`codebuild.logsViewer.maxLines`, default 10000 lines) so very large log streams stay responsive. Closing the viewer tab stops that build's log stream.
+- `Edit Environment Variables` action (settings/gear icon) on project rows: view, add, edit, and remove a CodeBuild project's configured environment variables through a guided picker flow, saved explicitly via `UpdateProject`. Requires `codebuild:BatchGetProjects` and `codebuild:UpdateProject`.
+- Permission-denied error messages now name the specific IAM action(s) required for the failing operation when known (currently: retrying a build, and reading/updating project environment variables).
+- New setting `codebuild.logsViewer.maxLines` controlling the per-build log viewer's line-retention cap.
+
+### Changed
+- `View Logs` no longer automatically shows/focuses the shared `BuildCompanion` output channel; logs still stream into it in the background for continuity, but the primary, focused surface is now the per-build log viewer document.
+
 ## [0.1.1] — 2026-09-22
 
 ### Changed

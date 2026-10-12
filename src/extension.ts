@@ -7,6 +7,7 @@ import { disposeLogsStreaming } from "./aws/logsService";
 import { clearAwsClientCache } from "./aws/clientFactory";
 import { logInfo, disposeOutputChannel } from "./logging/outputChannelManager";
 import { formatScope, notify } from "./notifications/notifier";
+import { registerBuildLogsDocumentProvider } from "./ui/buildLogsViewer";
 
 let activeBuildMonitor: BuildMonitor | null = null;
 
@@ -59,6 +60,8 @@ export async function activate(context: vscode.ExtensionContext) {
     });
 
     context.subscriptions.push(treeDataProvider, treeView, checkboxStateSubscription);
+
+    registerBuildLogsDocumentProvider(context);
 
     activeBuildMonitor?.dispose();
     activeBuildMonitor = new BuildMonitor(context, store);

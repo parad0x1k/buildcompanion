@@ -13,14 +13,18 @@ This document is the exhaustive reference for supported behavior in the current 
 - AWS profile discovery: local, SSO, environment, temporary
 - Region management with persisted selection
 - CodeBuild project listing, trigger, cancel, status checks, latest build lookup
+- Retry a past build (`RetryBuild`) reusing its original source version and the project's current configuration
 - Active build monitoring with adaptive polling and completion notifications
 - Wait-queue flow for project-level build concurrency conflicts
 - Batch deployment for selected projects with delay and optional fallback branch
 - Build history (lazy loaded per project)
+- Dedicated per-build log viewer (read-only virtual editor document) with throttled updates and a configurable line-retention cap, in addition to the shared output channel
 - CloudWatch log streaming with recoverable retry/backoff and failure summary extraction
+- Project environment variable viewing and editing (`BatchGetProjects` / `UpdateProject`)
 - Git branch suggestions and branch validation
 - Scope-aware state (profile + region) for branches, selections, queues, and safety blocks
 - Managed output channel logging with redaction and retention controls
+- Permission-denied error messages that name the specific missing IAM action when known
 
 ## Architecture and Data Flow
 
@@ -47,6 +51,8 @@ This document is the exhaustive reference for supported behavior in the current 
 | `codebuild.cancelBuild` | Cancel Build | BuildCompanion |
 | `codebuild.cancelAllBuilds` | Cancel All Builds | BuildCompanion |
 | `codebuild.viewLogs` | View Logs | BuildCompanion |
+| `codebuild.retryBuild` | Retry Build | BuildCompanion |
+| `codebuild.editEnvironmentVariables` | Edit Environment Variables | BuildCompanion |
 | `codebuild.selectAllProjects` | Select All Visible Projects | BuildCompanion |
 | `codebuild.deployAll` | Deploy Selected Projects | BuildCompanion |
 | `codebuild.setBranch` | Set Branch | BuildCompanion |
@@ -79,6 +85,8 @@ This document is the exhaustive reference for supported behavior in the current 
 
 - `codebuild.triggerBuild`: `view == codebuildView && viewItem == project`
 - `codebuild.setBranch`: `view == codebuildView && viewItem == project`
+- `codebuild.editEnvironmentVariables`: `view == codebuildView && viewItem == project`
+- `codebuild.retryBuild`: `view == codebuildView && viewItem == build`
 - `codebuild.viewLogs`: `view == codebuildView && viewItem == build`
 - `codebuild.cancelBuild`: `view == codebuildView && viewItem == buildInProgress`
 - `codebuild.deployAll`: `view == codebuildView && viewItem == projectsRoot`
@@ -208,11 +216,19 @@ Default region resolution order:
 
 - List projects (`ListProjects`, paginated)
 - Start build (`StartBuild`) with optional `sourceVersion` branch
+- Retry build (`RetryBuild`) reusing an existing build's resolved source version and the project's current configuration
 - Stop build (`StopBuild`)
 - Get one build status (`BatchGetBuilds`)
 - Get many build statuses in chunks of up to 100 IDs
 - Get latest build for project (`ListBuildsForProject` + `BatchGetBuilds`)
 - Resolve CloudWatch log group/stream metadata from build details
+
+### Project Environment Variable Management
+
+- Read configured environment variables (`BatchGetProjects`): name, value, and type (`PLAINTEXT`, `PARAMETER_STORE`, or `SECRETS_MANAGER`); missing type is normalized to `PLAINTEXT`.
+- Update environment variables (`BatchGetProjects` to fetch the current full `environment` configuration, then `UpdateProject`): since `UpdateProject` replaces the entire `environment` sub-object, every other field (image, compute type, privileged mode, registry credentials, etc.) is preserved unchanged and only `environmentVariables` is replaced.
+- Edits are staged in memory (add/edit/remove) in a QuickPick-driven flow and only written to AWS when the user explicitly chooses "Save changes to AWS"; dismissing without saving discards all staged edits.
+- Variable values are never written to the output channel log; only the count of updated variables is logged.
 
 ### Build History
 
@@ -220,6 +236,7 @@ Default region resolution order:
 - Initiator normalization: last path segment from ARN-like strings
 - Source version normalization: defaults to `default` when missing
 - Duration computed from `endTime - startTime` in seconds
+- Completed and historical build rows (`viewItem == build`) expose both `Retry Build` and `View Logs` inline actions
 
 ### Startup Build Reconciliation
 
@@ -353,6 +370,15 @@ Invalid when branch:
 
 ## Log Streaming and Failure Extraction
 
+### Per-Build Log Viewer
+
+- `codebuild.viewLogs` opens a dedicated, read-only virtual document (`codebuild-logs:` URI scheme) in a new editor tab beside the current editor (`vscode.ViewColumn.Beside`), instead of only relying on the shared output channel.
+- The document has no backing `FileSystemProvider`, so VS Code treats it as read-only automatically; it still supports scrolling, Find, minimap, and can be dragged into its own window like any editor tab.
+- Streamed lines are pushed to the viewer once per CloudWatch poll response (not per line), which naturally batches bursts; additional internal throttling coalesces rapid updates into at most one document refresh every 300 ms.
+- The viewer retains at most `codebuild.logsViewer.maxLines` lines (default `10000`, minimum `500`); once exceeded, the oldest lines are dropped and a truncation notice is shown.
+- Re-opening logs for the same build resets the viewer to a fresh buffer; closing the viewer tab aborts that build's log stream (via `AbortController`) so no further CloudWatch API calls are made for it.
+- The same log lines are still written to the shared `BuildCompanion` output channel (unchanged behavior); the output channel is no longer force-shown/focused when logs are opened.
+
 Log streaming (`streamBuildLogs`) details:
 
 - Stream key: `<profile>:<region>:<buildId>`
@@ -442,7 +468,7 @@ Log section prefixes:
 
 - `[INFO]`
 - `[ERROR]`
-- named sections used by command/service layers, for example `[BUILD]`, `[BATCH]`, `[LOGS]`, `[CANCEL]`, `[HISTORY]`, `[REFRESH]`, `[PERF]`
+- named sections used by command/service layers, for example `[BUILD]`, `[BATCH]`, `[LOGS]`, `[CANCEL]`, `[HISTORY]`, `[REFRESH]`, `[PERF]`, `[SETTINGS]`
 
 ## Error Mapping and User-Friendly Messages
 
@@ -458,6 +484,12 @@ Fallback behavior:
 - With operation context: `<operation> failed. Please check AWS configuration and try again.`
 - Without context: `AWS operation failed. Please check AWS configuration and try again.`
 
+Required-permission detail:
+
+- Call sites may supply `requiredPermissions: string[]` (IAM action names) alongside the error context.
+- When an error is classified as permission denied, the mapped message appends `Required IAM permission(s): <list>` so the user knows exactly what to grant, without needing to inspect the raw AWS error.
+- Currently supplied for: retrying a build (`codebuild:RetryBuild`), reading project environment variables (`codebuild:BatchGetProjects`), and updating project environment variables (`codebuild:BatchGetProjects`, `codebuild:UpdateProject`).
+
 No-profile message:
 
 - `No AWS profiles found. Run 'aws configure' or 'aws sso login'`
@@ -471,6 +503,7 @@ No-profile message:
 | `codebuild.performanceDiagnostics.enabled` | boolean | `false` | n/a | Periodic monitor performance logs |
 | `codebuild.logging.maxOutputLines` | integer | `8000` | `0` or `>=1000` | Output history truncation threshold |
 | `codebuild.logging.verbose` | boolean | `false` | n/a | Redaction toggle for identifiers |
+| `codebuild.logsViewer.maxLines` | integer | `10000` | `>=500` | Per-build log viewer line-retention cap before truncation |
 
 ## Environment Variable Reference
 
@@ -513,6 +546,9 @@ No-profile message:
 | History service | default history limit parameter | 5 |
 | History service | default max pages | 20 |
 | Command history loader | per-project request limit | 20 |
+| Log viewer | default line-retention cap | 10000 lines |
+| Log viewer | minimum configurable line-retention cap | 500 lines |
+| Log viewer | update-throttle window | 300 ms |
 
 ## Persistence Model
 

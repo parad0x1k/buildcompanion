@@ -1,16 +1,26 @@
 import {
     BatchGetBuildsCommand,
+    BatchGetProjectsCommand,
     ListBuildsCommand,
     ListBuildsForProjectCommand,
     ListProjectsCommand,
+    RetryBuildCommand,
     StopBuildCommand,
     StartBuildCommand,
-    type Build
+    UpdateProjectCommand,
+    type Build,
+    type EnvironmentVariableType
 } from "@aws-sdk/client-codebuild";
 import type * as vscode from "vscode";
 import { createCodeBuildClient } from "./clientFactory";
 import type { BuildHistoryEntry, BuildState, BuildStatus, Project } from "../state/store";
 import { getUserFriendlyErrorMessage } from "./errorHandling";
+
+export type ProjectEnvironmentVariable = {
+    name: string;
+    value: string;
+    type: EnvironmentVariableType | "PLAINTEXT";
+};
 
 export type CodeBuildServiceOptions = {
     secretStorage?: vscode.SecretStorage;
@@ -133,6 +143,7 @@ function toReadableError(error: unknown, context: {
     profile: string;
     region: string;
     operation: string;
+    requiredPermissions?: string[];
 }): Error {
     const message = getUserFriendlyErrorMessage(error, context);
     return new Error(`${message} (profile: ${context.profile}, region: ${context.region})`);
@@ -545,6 +556,144 @@ export async function listRecentBuildHistoryForProject(
             profile,
             region,
             operation: "Fetching build history"
+        });
+    }
+}
+
+export async function retryBuild(
+    profile: string,
+    region: string,
+    buildId: string,
+    options?: CodeBuildServiceOptions
+): Promise<BuildState> {
+    validateScope(profile, region);
+
+    const normalizedBuildId = buildId.trim();
+    if (!normalizedBuildId) {
+        throw new Error("Build ID is required to retry a build");
+    }
+
+    try {
+        const client = await createCodeBuildClient(profile, region, {
+            secretStorage: options?.secretStorage
+        });
+
+        const response = await client.send(new RetryBuildCommand({ id: normalizedBuildId }), {
+            abortSignal: options?.signal
+        });
+
+        const buildState = response.build ? toBuildState(response.build, profile, region) : null;
+        if (!buildState) {
+            throw new Error("RetryBuild did not return a valid build payload");
+        }
+
+        return buildState;
+    } catch (error) {
+        throw toReadableError(error, {
+            profile,
+            region,
+            operation: "Retrying build",
+            requiredPermissions: ["codebuild:RetryBuild"]
+        });
+    }
+}
+
+export async function getProjectEnvironmentVariables(
+    profile: string,
+    region: string,
+    projectName: string,
+    options?: CodeBuildServiceOptions
+): Promise<ProjectEnvironmentVariable[]> {
+    validateScope(profile, region);
+
+    const normalizedProjectName = projectName.trim();
+    if (!normalizedProjectName) {
+        throw new Error("Project name is required to read environment variables");
+    }
+
+    try {
+        const client = await createCodeBuildClient(profile, region, {
+            secretStorage: options?.secretStorage
+        });
+
+        const response = await client.send(new BatchGetProjectsCommand({ names: [normalizedProjectName] }), {
+            abortSignal: options?.signal
+        });
+
+        const project = response.projects?.[0];
+        if (!project) {
+            throw new Error(`Project '${normalizedProjectName}' was not found`);
+        }
+
+        return (project.environment?.environmentVariables ?? [])
+            .filter((variable): variable is { name: string; value: string; type?: EnvironmentVariableType } => (
+                Boolean(variable.name && variable.value !== undefined)
+            ))
+            .map((variable) => ({
+                name: variable.name,
+                value: variable.value,
+                type: variable.type ?? "PLAINTEXT"
+            }));
+    } catch (error) {
+        throw toReadableError(error, {
+            profile,
+            region,
+            operation: "Reading project environment variables",
+            requiredPermissions: ["codebuild:BatchGetProjects"]
+        });
+    }
+}
+
+export async function setProjectEnvironmentVariables(
+    profile: string,
+    region: string,
+    projectName: string,
+    environmentVariables: ProjectEnvironmentVariable[],
+    options?: CodeBuildServiceOptions
+): Promise<void> {
+    validateScope(profile, region);
+
+    const normalizedProjectName = projectName.trim();
+    if (!normalizedProjectName) {
+        throw new Error("Project name is required to update environment variables");
+    }
+
+    try {
+        const client = await createCodeBuildClient(profile, region, {
+            secretStorage: options?.secretStorage
+        });
+
+        const existing = await client.send(new BatchGetProjectsCommand({ names: [normalizedProjectName] }), {
+            abortSignal: options?.signal
+        });
+
+        const project = existing.projects?.[0];
+        if (!project?.environment) {
+            throw new Error(`Project '${normalizedProjectName}' was not found`);
+        }
+
+        // UpdateProject replaces the entire `environment` sub-object, so the existing
+        // configuration (image, computeType, privilegedMode, etc.) must be preserved
+        // and only `environmentVariables` swapped out.
+        await client.send(new UpdateProjectCommand({
+            name: normalizedProjectName,
+            environment: {
+                ...project.environment,
+                environmentVariables: environmentVariables.map((variable) => ({
+                    name: variable.name,
+                    value: variable.value,
+                    type: variable.type
+                }))
+            }
+        }), {
+            abortSignal: options?.signal
+        });
+    } catch (error) {
+        throw toReadableError(error, {
+            profile,
+            region,
+            operation: "Updating project environment variables",
+            requiredPermissions: ["codebuild:BatchGetProjects", "codebuild:UpdateProject"]
         });
     }
 }

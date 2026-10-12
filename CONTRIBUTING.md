@@ -40,15 +40,56 @@ Useful scripts:
 | `npm run compile` | TypeScript build to `out/` |
 | `npm run watch` | TypeScript build in watch mode |
 | `npm run lint:repo` | Type-check only, no emit |
+| `npm test` | Compile, then run the automated test suite |
 | `npm run audit` | Production dependency audit (moderate or higher) |
 | `npm run package` | Produce a `.vsix` via `vsce` |
+
+## Testing
+
+Tests run inside a real VS Code Extension Development Host (downloaded automatically by
+`@vscode/test-electron` on first run) using Mocha, via `@vscode/test-cli`. This gives test code full
+access to the real `vscode` API — there is no need to mock it.
+
+```powershell
+npm test
+```
+
+This runs `pretest` (`npm run compile`) and then executes every `*.test.js` file compiled from
+`src/test/suite/*.test.ts`, per the `.vscode-test.mjs` config at the repo root.
+
+What is covered:
+
+- Pure logic: `src/commands/shared.ts` validators/formatters, `src/aws/errorExtractor.ts`,
+  `src/aws/errorHandling.ts`, `src/aws/regionManager.ts`, `src/state/store.ts`.
+- AWS-facing services (`src/aws/codebuildService.ts`, `src/aws/batchTriggerManager.ts`), mocked at the
+  SDK client boundary with [`aws-sdk-client-mock`](https://github.com/m-radzikowski/aws-sdk-client-mock) —
+  no real AWS calls, no real credentials needed.
+- `src/git/gitService.ts` against real temporary git repositories (and the "not a repository" fallback
+  path); skips gracefully if `git` is unavailable on the machine running the tests.
+- `src/ui/buildLogsViewer.ts`'s update-throttling and line-retention-cap behavior directly.
+- Command registration: `registerCodeBuildCommands` is exercised against a fake
+  `vscode.ExtensionContext`, with `src/aws/profileManager.ts` and `src/aws/codebuildService.ts` stubbed via
+  Sinon so activation never touches the host machine's real AWS configuration or network.
+
+Conventions when adding tests:
+
+- Add new `*.test.ts` files under `src/test/suite/`. Non-test helpers (not matched by the test glob) live
+  directly under `src/test/`, e.g. `testHelpers.ts` (fake `ExtensionContext`/`Memento`/`SecretStorage`) and
+  `awsMocks.ts` (shared `aws-sdk-client-mock` client stubs).
+- Reuse the shared mocks in `src/test/awsMocks.ts` instead of calling `mockClient(...)` again on the same
+  client class in a new file — Sinon throws if the same method is stubbed twice without an intervening
+  `.restore()`, and every `*.test.js` file is loaded before any test runs.
+- Reset mocks/stubs in `beforeEach`, not `after`, so failures in one test don't leak into the next.
+
+CI (`.github/workflows/ci.yml`) runs the same suite headlessly via `xvfb-run -a npm test` on
+`ubuntu-latest` (Xvfb ships preinstalled on GitHub-hosted Ubuntu runners).
 
 ## Branching and Pull Requests
 
 - Branch from `main`.
 - One topic per PR; keep diffs reviewable.
 - Reference the related issue in the PR body.
-- The CI workflow (`.github/workflows/ci.yml`) must pass: install, compile, audit.
+- The CI workflow (`.github/workflows/ci.yml`) must pass: install, compile, test, audit.
 - Add a CHANGELOG entry under `[Unreleased]` for any user-observable change.
 
 ## Reporting Security Issues
@@ -62,7 +103,8 @@ The codebase uses TypeScript strict mode (`tsconfig.json` sets `"strict": true`)
 - Prefer `readonly` and immutable updates over in-place mutation of state objects.
 - Route every user-facing or operator-facing log through `outputChannelManager` (`logInfo` / `logError` / `logSection`). Do not use `console.*`.
 - Sanitize identifiers in logs with `sanitizeLogValue(value, kind)` so verbose-off mode redacts profile/region/buildId by default.
-- Wrap AWS SDK call sites in `getUserFriendlyErrorMessage(error, context)` so users see actionable messages.
+- Wrap AWS SDK call sites in `getUserFriendlyErrorMessage(error, context)` so users see actionable messages. Pass `context.requiredPermissions` (an array of IAM action strings, e.g. `["codebuild:RetryBuild"]`) for any operation where a permission-denied failure should tell the user exactly which permission to request.
+- Never log the literal value of a credential, secret, or project environment variable — even in verbose mode. Log counts or names only when necessary.
 
 ## Code of Conduct
 

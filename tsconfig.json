@@ -9,13 +9,17 @@
     ],
     "types": [
       "node",
-      "vscode"
+      "vscode",
+      "mocha"
     ],
     "strict": true,
     "sourceMap": true,
     "esModuleInterop": true,
     "moduleResolution": "node16",
-    "skipLibCheck": false
+    // true: avoids type-checking vendored .d.ts files (e.g. aws-sdk-client-mock's nested,
+    // version-conflicting @types/sinon copy used only by the test suite); our own src/**
+    // files are always fully checked regardless of this setting.
+    "skipLibCheck": true
   },
   "include": [
     "src"

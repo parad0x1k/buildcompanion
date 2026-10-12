@@ -70,7 +70,12 @@ Grant enough permissions for the APIs used by the extension:
 - `codebuild:BatchGetBuilds`
 - `codebuild:StartBuild`
 - `codebuild:StopBuild`
+- `codebuild:RetryBuild` (required to retry a build from Build History)
+- `codebuild:BatchGetProjects` (required to view project environment variables)
+- `codebuild:UpdateProject` (required to save project environment variable changes)
 - `logs:GetLogEvents`
+
+If a permission is missing, the failed action shows a short notification and logs a detailed message naming the exact IAM action to add — see the `BuildCompanion` output channel.
 
 ## Quick Start
 
@@ -86,13 +91,17 @@ Grant enough permissions for the APIs used by the extension:
 - Profile discovery across local, SSO, environment, and temporary credentials.
 - Region switching with persisted selection.
 - CodeBuild project listing, trigger, status monitoring, cancel, and history.
+- Retry a past build from Build History using its original source version and project configuration.
 - Build concurrency prompts (Wait, Trigger anyway, Cancel) with queue handling.
 - Batch deployment for selected projects with per-project branch memory and fallback branch.
+- Dedicated, scrollable per-build log viewer (its own editor tab) with throttled updates and a line-retention cap, so very large log streams stay responsive.
+- View and edit a project's CodeBuild environment variables from a settings (gear) icon.
 - CloudWatch log streaming with recoverable retry/backoff behavior.
 - Failure summary extraction from recent log lines.
 - Search and filtering of projects in TreeView.
 - Scope-aware state for profile, region, branches, selections, queued items, and destructive-action blocks.
 - Output channel logging with identifier redaction by default and configurable retention.
+- Permission-denied failures name the specific missing IAM action where applicable.
 
 ## Command Surface
 
@@ -110,7 +119,9 @@ All contributed commands are available through the Command Palette. Several are 
 | `codebuild.triggerBuild` | Trigger Build | Project inline action, context menu, Command Palette | Start build for a project |
 | `codebuild.cancelBuild` | Cancel Build | Active build inline action, Command Palette | Stop a selected in-progress build |
 | `codebuild.cancelAllBuilds` | Cancel All Builds | Toolbar, Command Palette | Cancel in-progress and queued operations in current scope |
-| `codebuild.viewLogs` | View Logs | Build history inline action, Command Palette | Stream CloudWatch logs |
+| `codebuild.viewLogs` | View Logs | Build history inline action, Command Palette | Open the per-build log viewer and stream CloudWatch logs |
+| `codebuild.retryBuild` | Retry Build | Build history inline action, Command Palette | Start a new build reusing a past build's source version |
+| `codebuild.editEnvironmentVariables` | Edit Environment Variables | Project inline action (gear icon), Command Palette | View/add/edit/remove a project's CodeBuild environment variables |
 | `codebuild.selectAllProjects` | Select All Visible Projects | Toolbar (conditional), Command Palette | Select visible projects for batch deploy |
 | `codebuild.deployAll` | Deploy Selected Projects | Toolbar, projects root context menu, Command Palette | Start sequential batch deployment |
 | `codebuild.setBranch` | Set Branch | Project inline action, context menu, Command Palette | Save scoped branch mapping |
@@ -178,9 +189,25 @@ Supported regions are fixed in this version. See [FEATURE_REFERENCE.md](FEATURE_
 
 ### View Logs and Failure Summary
 
-1. Open logs from a history row or command.
-2. Logs stream into the extension Output Channel.
-3. For failed builds, a failure summary is extracted from recent log lines.
+1. Open logs from a history row, active build, or command.
+2. Logs stream into a dedicated, scrollable editor tab for that build (opened beside your current editor) so you can keep watching while you work elsewhere. The same lines are also written to the shared `BuildCompanion` output channel for continuity.
+3. The viewer keeps the most recent `codebuild.logsViewer.maxLines` lines (default `10000`) and shows a truncation notice once older lines are dropped, so extremely long-running builds stay responsive.
+4. Closing the log viewer tab stops streaming for that build (no more CloudWatch API calls are made on your behalf).
+5. For failed builds, a failure summary is extracted from recent log lines and appended to the viewer and the output channel.
+
+### Retry a Build
+
+1. Expand a project under Build History (or find a completed build in Active Builds).
+2. Use the retry inline action (or `Retry Build` from the Command Palette) on a completed build.
+3. Confirm the prompt. A new build starts using the original build's source version and the project's current configuration.
+4. If a build is already in progress for that project, you are asked to confirm before starting a second, concurrent build.
+
+### Edit Project Environment Variables
+
+1. Use the settings (gear) inline action on a project row (or `Edit Environment Variables` from the Command Palette).
+2. The current environment variables configured on the CodeBuild project are fetched and listed.
+3. Add, edit, or remove variables, choosing a type (`PLAINTEXT`, `PARAMETER_STORE`, or `SECRETS_MANAGER`) for each.
+4. Choose `Save changes to AWS` to apply, or dismiss without saving to discard your edits. Nothing is written to AWS until you explicitly save.
 
 ### Cancel Active Operations in Scope
 
@@ -208,6 +235,7 @@ Supported regions are fixed in this version. See [FEATURE_REFERENCE.md](FEATURE_
 | `codebuild.performanceDiagnostics.enabled` | `false` | Emit periodic monitor performance diagnostics |
 | `codebuild.logging.maxOutputLines` | `8000` | Output retention threshold; set `0` to disable automatic clearing |
 | `codebuild.logging.verbose` | `false` | Disable identifier redaction in output logs |
+| `codebuild.logsViewer.maxLines` | `10000` | Maximum lines retained in the per-build log viewer before older lines are truncated (minimum `500`) |
 
 ## Security Notes
 
@@ -245,7 +273,6 @@ Supported regions are fixed in this version. See [FEATURE_REFERENCE.md](FEATURE_
 
 - Queue and selection state are in-memory only and are not persisted across extension reload.
 - Build history is loaded lazily per project (on expand), not preloaded globally.
-- Logs are output-channel based and not a custom full log viewer UI.
 - Region list is fixed in this release.
 - Only one batch deployment can be active at a time in the extension session.
 - Git branch suggestions use the first workspace folder and may be limited in complex multi-root workspaces.
@@ -263,10 +290,12 @@ Available scripts:
 
 - `npm run compile`
 - `npm run watch`
-- `npm run test` (placeholder)
+- `npm test` (compiles, then runs the automated test suite in a real VS Code instance)
 - `npm run audit:production`
 - `npm run audit:production:json`
 - `npm run audit:production:fix-dry-run`
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full contributor setup and testing details.
 
 ## Additional Reference
 

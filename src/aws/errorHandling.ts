@@ -4,6 +4,8 @@ type ErrorContext = {
     profile?: string | null;
     region?: string | null;
     operation?: string;
+    /** IAM actions the caller needed for this operation, surfaced when AWS reports an access-denied error. */
+    requiredPermissions?: string[];
 };
 
 function getErrorName(error: unknown): string {
@@ -60,6 +62,11 @@ function isPermissionDeniedError(errorNameLower: string, errorMessageLower: stri
         "not authorized",
         "is not authorized",
         "missing required permissions",
+        // Matches this module's own previously-generated permission message so that callers
+        // which wrap an already-friendly error a second time (service layer, then command
+        // layer) still preserve the permission-denied classification instead of falling
+        // back to a generic message and losing the required-IAM-permission detail.
+        "aws permissions",
         "user is not authorized"
     ]);
 }
@@ -109,11 +116,16 @@ export function getUserFriendlyErrorMessage(error: unknown, context?: ErrorConte
     }
 
     if (isPermissionDeniedError(errorNameLower, errorMessageLower)) {
-        if (context?.operation) {
-            return `${context.operation} failed due to missing AWS permissions for profile ${profile}`;
+        const base = context?.operation
+            ? `${context.operation} failed due to missing AWS permissions for profile ${profile}`
+            : `Missing required AWS permissions for profile ${profile}`;
+        const requiredPermissions = context?.requiredPermissions?.filter((permission) => permission.trim().length > 0);
+
+        if (requiredPermissions && requiredPermissions.length > 0) {
+            return `${base}. Required IAM permission(s): ${requiredPermissions.join(", ")}`;
         }
 
-        return `Missing required AWS permissions for profile ${profile}`;
+        return base;
     }
 
     if (isInvalidRegionError(errorNameLower, errorMessageLower)) {
