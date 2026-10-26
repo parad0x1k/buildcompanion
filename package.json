@@ -92,6 +92,12 @@
         "icon": "$(sync)"
       },
       {
+        "command": "codebuild.toggleBuildTimeDisplay",
+        "title": "Toggle Build Time Display (Local/UTC)",
+        "category": "BuildCompanion",
+        "icon": "$(clock)"
+      },
+      {
         "command": "codebuild.setTemporaryCredentials",
         "title": "Set AWS Credentials",
         "category": "BuildCompanion"
@@ -119,6 +125,12 @@
         "title": "View Logs",
         "category": "BuildCompanion",
         "icon": "$(list-selection)"
+      },
+      {
+        "command": "codebuild.viewFullLogs",
+        "title": "View Full Log",
+        "category": "BuildCompanion",
+        "icon": "$(book)"
       },
       {
         "command": "codebuild.retryBuild",
@@ -211,9 +223,19 @@
           "group": "inline@3"
         },
         {
+          "command": "codebuild.viewFullLogs",
+          "when": "view == codebuildView && viewItem == build",
+          "group": "inline@4"
+        },
+        {
           "command": "codebuild.viewLogs",
           "when": "view == codebuildView && viewItem == buildInProgress",
           "group": "inline@2"
+        },
+        {
+          "command": "codebuild.viewFullLogs",
+          "when": "view == codebuildView && viewItem == buildInProgress",
+          "group": "inline@3"
         },
         {
           "command": "codebuild.cancelBuild",
@@ -287,6 +309,13 @@
           "when": "view == codebuildView && codebuild.hasSavedBranches",
           "group": "navigation@8"
         }
+      ],
+      "editor/title": [
+        {
+          "command": "codebuild.viewFullLogs",
+          "when": "resourceScheme == codebuild-logs",
+          "group": "navigation"
+        }
       ]
     },
     "configuration": {
@@ -337,6 +366,12 @@
           "default": 10000,
           "minimum": 500,
           "description": "Maximum number of log lines retained in the per-build log viewer document before older lines are truncated. Keeps the editor responsive for very large log streams."
+        },
+        "codebuild.logsViewer.maxFullLogLines": {
+          "type": "integer",
+          "default": 50000,
+          "minimum": 1000,
+          "description": "Maximum number of log lines fetched when loading a build's entire log history via \"View Full Log\". Protects against excessive memory/API usage for very large builds; increase to see more of extremely long logs."
         }
       }
     }

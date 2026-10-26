@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { createAppStore } from "./state/store";
+import { getPersistedBuildTimeDisplayFormat } from "./state/timeDisplayPreference";
 import { CodeBuildTreeDataProvider, type TreeNode } from "./ui/treeDataProvider";
 import { initializeCommandState, loadBuildHistoryForProject, registerCodeBuildCommands } from "./commands";
 import { BuildMonitor } from "./monitor/buildMonitor";
@@ -14,7 +15,9 @@ let activeBuildMonitor: BuildMonitor | null = null;
 export async function activate(context: vscode.ExtensionContext) {
     logInfo("BuildCompanion activated");
 
-    const store = createAppStore();
+    const store = createAppStore({
+        buildTimeDisplayFormat: getPersistedBuildTimeDisplayFormat(context)
+    });
     context.subscriptions.push(store);
 
     try {

@@ -1,6 +1,11 @@
 import * as assert from "node:assert/strict";
 import * as vscode from "vscode";
-import { BuildLogsDocumentProvider, BUILD_LOGS_URI_SCHEME, buildLogsDocumentUri } from "../../ui/buildLogsViewer";
+import {
+    BuildLogsDocumentProvider,
+    BUILD_LOGS_URI_SCHEME,
+    buildFullLogsDocumentUri,
+    buildLogsDocumentUri
+} from "../../ui/buildLogsViewer";
 
 function wait(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,6 +25,22 @@ describe("ui/buildLogsViewer", () => {
             const uriA = buildLogsDocumentUri("dev", "us-east-1", "demo:123");
             const uriB = buildLogsDocumentUri("dev", "us-east-1", "demo:456");
             assert.notEqual(uriA.toString(), uriB.toString());
+        });
+    });
+
+    describe("buildFullLogsDocumentUri", () => {
+        it("produces a scheme-correct URI distinct from the tailing log URI for the same build", () => {
+            const tailUri = buildLogsDocumentUri("dev", "us-east-1", "demo:123");
+            const fullUri = buildFullLogsDocumentUri("dev", "us-east-1", "demo:123");
+
+            assert.equal(fullUri.scheme, BUILD_LOGS_URI_SCHEME);
+            assert.notEqual(fullUri.toString(), tailUri.toString());
+        });
+
+        it("produces a stable URI for the same build", () => {
+            const uriA = buildFullLogsDocumentUri("dev", "us-east-1", "demo:123");
+            const uriB = buildFullLogsDocumentUri("dev", "us-east-1", "demo:123");
+            assert.equal(uriA.toString(), uriB.toString());
         });
     });
 
@@ -107,6 +128,57 @@ describe("ui/buildLogsViewer", () => {
             } finally {
                 await config.update("logsViewer.maxLines", undefined, vscode.ConfigurationTarget.Global);
             }
+        });
+
+        it("never truncates an unbounded (full log) document even past the configured maximum", async () => {
+            const config = vscode.workspace.getConfiguration("codebuild");
+            await config.update("logsViewer.maxLines", 500, vscode.ConfigurationTarget.Global);
+
+            try {
+                const uri = buildFullLogsDocumentUri("dev", "us-east-1", "demo:123");
+                provider.open(
+                    uri,
+                    { projectName: "demo", profile: "dev", region: "us-east-1", buildId: "demo:123", mode: "full" },
+                    { unbounded: true }
+                );
+
+                const lines = Array.from({ length: 510 }, (_, index) => `line-${index}`);
+                provider.appendLines(uri, lines);
+
+                const content = provider.provideTextDocumentContent(uri);
+                assert.ok(!content.includes("truncated"), "an unbounded document should never report truncation");
+                assert.ok(content.includes("line-0"), "earliest line must be retained when unbounded");
+                assert.ok(content.includes("line-509"), "most recent line must be retained");
+            } finally {
+                await config.update("logsViewer.maxLines", undefined, vscode.ConfigurationTarget.Global);
+            }
+        });
+
+        it("renders a distinct header for a 'full' mode document", () => {
+            const uri = buildFullLogsDocumentUri("dev", "us-east-1", "demo:123");
+            provider.open(
+                uri,
+                { projectName: "demo", profile: "dev", region: "us-east-1", buildId: "demo:123", mode: "full" },
+                { unbounded: true }
+            );
+
+            const content = provider.provideTextDocumentContent(uri);
+            assert.match(content, /Full Log/);
+            assert.match(content, /Project:\s+demo/);
+            assert.match(content, /Build ID:\s+demo:123/);
+        });
+
+        it("exposes the stored header via getHeader for an open document", () => {
+            const uri = buildLogsDocumentUri("dev", "us-east-1", "demo:123");
+            provider.open(uri, { projectName: "demo", profile: "dev", region: "us-east-1", buildId: "demo:123" });
+
+            const header = provider.getHeader(uri);
+            assert.deepEqual(header, { projectName: "demo", profile: "dev", region: "us-east-1", buildId: "demo:123" });
+        });
+
+        it("returns undefined from getHeader for a URI that was never opened", () => {
+            const uri = buildLogsDocumentUri("dev", "us-east-1", "never-opened");
+            assert.equal(provider.getHeader(uri), undefined);
         });
 
         it("appends a footer after the body content", () => {

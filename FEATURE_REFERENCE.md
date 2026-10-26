@@ -19,7 +19,11 @@ This document is the exhaustive reference for supported behavior in the current 
 - Batch deployment for selected projects with delay and optional fallback branch
 - Build history (lazy loaded per project)
 - Dedicated per-build log viewer (read-only virtual editor document) with throttled updates and a configurable line-retention cap, in addition to the shared output channel
+- One-shot "View Full Log" snapshot (`codebuild.viewFullLogs`) that paginates CloudWatch from the beginning of the stream into a second, unbounded read-only document, independent of the tailing viewer's line cap
+- Log message sanitization: ANSI color/cursor escape codes are stripped and carriage-return progress-bar overwrites are collapsed before display, so colorized/progress-reporting build tool output renders as plain legible text instead of stray control characters
 - CloudWatch log streaming with recoverable retry/backoff and failure summary extraction
+- Human-readable build status labels in the tree view (e.g. `IN_PROGRESS` → "In Progress") with a generic title-case fallback for any unrecognized status
+- Build timestamp Local/UTC display toggle (`codebuild.toggleBuildTimeDisplay`), persisted across sessions, with an explicit timezone abbreviation shown in both modes
 - Project environment variable viewing and editing (`BatchGetProjects` / `UpdateProject`)
 - Git branch suggestions and branch validation
 - Scope-aware state (profile + region) for branches, selections, queues, and safety blocks
@@ -46,11 +50,13 @@ This document is the exhaustive reference for supported behavior in the current 
 | `codebuild.searchProjects` | Search Projects | BuildCompanion |
 | `codebuild.clearProjectSearch` | Clear Project Search | BuildCompanion |
 | `codebuild.toggleAutoRefresh` | Toggle Auto-Refresh | BuildCompanion |
+| `codebuild.toggleBuildTimeDisplay` | Toggle Build Time Display (Local/UTC) | BuildCompanion |
 | `codebuild.setTemporaryCredentials` | Set AWS Credentials | BuildCompanion |
 | `codebuild.triggerBuild` | Trigger Build | BuildCompanion |
 | `codebuild.cancelBuild` | Cancel Build | BuildCompanion |
 | `codebuild.cancelAllBuilds` | Cancel All Builds | BuildCompanion |
 | `codebuild.viewLogs` | View Logs | BuildCompanion |
+| `codebuild.viewFullLogs` | View Full Log | BuildCompanion |
 | `codebuild.retryBuild` | Retry Build | BuildCompanion |
 | `codebuild.editEnvironmentVariables` | Edit Environment Variables | BuildCompanion |
 | `codebuild.selectAllProjects` | Select All Visible Projects | BuildCompanion |
@@ -67,11 +73,13 @@ This document is the exhaustive reference for supported behavior in the current 
 - `onCommand:codebuild.searchProjects`
 - `onCommand:codebuild.clearProjectSearch`
 - `onCommand:codebuild.toggleAutoRefresh`
+- `onCommand:codebuild.toggleBuildTimeDisplay`
 - `onCommand:codebuild.setTemporaryCredentials`
 - `onCommand:codebuild.triggerBuild`
 - `onCommand:codebuild.cancelBuild`
 - `onCommand:codebuild.cancelAllBuilds`
 - `onCommand:codebuild.viewLogs`
+- `onCommand:codebuild.viewFullLogs`
 - `onCommand:codebuild.selectAllProjects`
 - `onCommand:codebuild.deployAll`
 - `onCommand:codebuild.setBranch`
@@ -88,8 +96,15 @@ This document is the exhaustive reference for supported behavior in the current 
 - `codebuild.editEnvironmentVariables`: `view == codebuildView && viewItem == project`
 - `codebuild.retryBuild`: `view == codebuildView && viewItem == build`
 - `codebuild.viewLogs`: `view == codebuildView && viewItem == build`
+- `codebuild.viewFullLogs`: `view == codebuildView && viewItem == build`
+- `codebuild.viewLogs`: `view == codebuildView && viewItem == buildInProgress`
+- `codebuild.viewFullLogs`: `view == codebuildView && viewItem == buildInProgress`
 - `codebuild.cancelBuild`: `view == codebuildView && viewItem == buildInProgress`
 - `codebuild.deployAll`: `view == codebuildView && viewItem == projectsRoot`
+
+#### `editor/title`
+
+- `codebuild.viewFullLogs`: `resourceScheme == codebuild-logs` — shown as a toolbar button on any open per-build log viewer tab (tailing or full), so the entire log can be loaded without going back to the tree.
 
 #### `view/title` (toolbar)
 
@@ -118,6 +133,7 @@ Rows:
 - Profile (command: `codebuild.switchProfile`)
 - Region (command: `codebuild.switchRegion`)
 - Auto Refresh toggle (command: `codebuild.toggleAutoRefresh`)
+- Build Times Local/UTC toggle, label `Build Times: Local` or `Build Times: UTC` (command: `codebuild.toggleBuildTimeDisplay`); defaults to `Local` and persists across sessions in `globalState` key `codebuild.buildTimeDisplayFormat`
 - Credentials (command: `codebuild.setTemporaryCredentials`)
 
 ### Projects Section
@@ -137,7 +153,8 @@ Checkbox behavior:
 
 - Displays elapsed duration in item label.
 - Uses build `startTime` if available; otherwise falls back to first-seen timestamp in UI layer.
-- Context value is `buildInProgress` only while status is `IN_PROGRESS`.
+- Context value is `buildInProgress` only while status is `IN_PROGRESS` (internal value; unaffected by the human-readable status label shown in the description/tooltip).
+- Status shown in the description and tooltip is a human-readable label (e.g. `In Progress`) via `formatBuildStatusLabel`, not the raw `IN_PROGRESS`-style AWS status code.
 
 ### Build History Section
 
@@ -146,6 +163,9 @@ Checkbox behavior:
 - Loading state shows `Loading build history...`.
 - Empty state shows `No build history found`.
 - History row label format: `<sourceVersion> (<initiator>)`.
+- Status shown in the tooltip is a human-readable label (e.g. `Succeeded`, `Timed Out`) via `formatBuildStatusLabel`.
+- The completion time shown in the row description and tooltip (`Completed:`/`Failed:`/`Stopped:`/`Updated:`) honors the Local/UTC toggle and always includes an explicit timezone abbreviation (e.g. `IST`, `UTC`) so it's unambiguous which one is displayed.
+- Completed and historical build rows also expose a `View Full Log` inline action (`codebuild.viewFullLogs`) alongside `Retry Build` and `View Logs`.
 
 ## Authentication and Credential Handling
 
@@ -238,7 +258,7 @@ Default region resolution order:
 - Initiator normalization: last path segment from ARN-like strings
 - Source version normalization: defaults to `default` when missing
 - Duration computed from `endTime - startTime` in seconds
-- Completed and historical build rows (`viewItem == build`) expose both `Retry Build` and `View Logs` inline actions
+- Completed and historical build rows (`viewItem == build`) expose `Retry Build`, `View Logs`, and `View Full Log` inline actions
 
 ### Startup Build Reconciliation
 
@@ -380,6 +400,16 @@ Invalid when branch:
 - The viewer retains at most `codebuild.logsViewer.maxLines` lines (default `10000`, minimum `500`); once exceeded, the oldest lines are dropped and a truncation notice is shown.
 - Re-opening logs for the same build resets the viewer to a fresh buffer; closing the viewer tab aborts that build's log stream (via `AbortController`) so no further CloudWatch API calls are made for it.
 - The same log lines are still written to the shared `BuildCompanion` output channel (unchanged behavior); the output channel is no longer force-shown/focused when logs are opened.
+- Before display (and before being written to the output channel), every log message is sanitized via `sanitizeLogMessageForDisplay`: ANSI color/cursor escape codes are stripped, carriage-return progress-bar overwrites (e.g. `docker pull`, `npm`, `pip` progress bars) are collapsed to their final rendered line, and any other stray C0 control character is dropped (tabs are preserved). This prevents colorized/progress-reporting build tool output from rendering as unreadable control-character glyphs.
+
+### Full Log Snapshot (`codebuild.viewFullLogs`)
+
+- Available as an editor-title toolbar button on any open per-build log viewer tab (`resourceScheme == codebuild-logs`), and as a `View Full Log` inline action on Build History / Active Builds rows; resolves its target build either from the tree selection or from the currently active log viewer tab's stored header metadata.
+- Opens a second, independent read-only document (same `codebuild-logs:` scheme, distinguished by a `.full.log` path suffix) so the original tailing viewer is left untouched — the default "tail" viewing experience is unchanged.
+- Fetches the build's entire available CloudWatch log history from the beginning (`GetLogEvents` with `startFromHead: true`), paginating until it catches up to the latest data, instead of only the recent tail. For a still-running build this returns a snapshot of everything emitted so far (it does not keep polling for new data afterward).
+- Runs under a cancellable `vscode.window.withProgress` notification that reports cumulative lines fetched; the viewer document fills in incrementally as each page arrives rather than appearing only once the fetch completes.
+- This document is unbounded: unlike the tailing viewer, it is not subject to `codebuild.logsViewer.maxLines`. Instead, the fetch itself is capped at `codebuild.logsViewer.maxFullLogLines` (default `50000`, minimum `1000`) as a safety limit; if reached, the footer explicitly states the log was truncated and names the setting to increase.
+- The header of a full-log document is marked `BuildCompanion — Build Logs (Full Log)` with an additional `Mode:` line, so it's visually distinguishable from the tailing viewer's header.
 
 Log streaming (`streamBuildLogs`) details:
 
@@ -506,6 +536,7 @@ No-profile message:
 | `codebuild.logging.maxOutputLines` | integer | `8000` | `0` or `>=1000` | Output history truncation threshold |
 | `codebuild.logging.verbose` | boolean | `false` | n/a | Redaction toggle for identifiers |
 | `codebuild.logsViewer.maxLines` | integer | `10000` | `>=500` | Per-build log viewer line-retention cap before truncation |
+| `codebuild.logsViewer.maxFullLogLines` | integer | `50000` | `>=1000` | Safety cap on total lines fetched by "View Full Log" |
 
 ## Environment Variable Reference
 

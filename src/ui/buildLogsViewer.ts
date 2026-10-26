@@ -23,6 +23,8 @@ type ViewerHeader = {
     profile: string;
     region: string;
     buildId: string;
+    /** "full" renders a distinct header and (via `open`'s `unbounded` option) skips line capping. */
+    mode?: "tail" | "full";
 };
 
 type ViewerState = {
@@ -32,6 +34,8 @@ type ViewerState = {
     footer?: string;
     cancel?: () => void;
     refreshTimer?: NodeJS.Timeout;
+    /** When true, `appendLines` never truncates - used by the "full log" snapshot view. */
+    unbounded?: boolean;
 };
 
 function getMaxViewerLines(): number {
@@ -47,14 +51,21 @@ function getMaxViewerLines(): number {
 }
 
 function renderHeader(header: ViewerHeader): string[] {
-    return [
-        "BuildCompanion — Build Logs",
+    const isFull = header.mode === "full";
+    const lines = [
+        isFull ? "BuildCompanion — Build Logs (Full Log)" : "BuildCompanion — Build Logs",
         `Project:  ${header.projectName}`,
         `Profile:  ${header.profile}`,
         `Region:   ${header.region}`,
-        `Build ID: ${header.buildId}`,
-        "─".repeat(60)
+        `Build ID: ${header.buildId}`
     ];
+
+    if (isFull) {
+        lines.push("Mode:     Full log (entire available history, from the beginning)");
+    }
+
+    lines.push("─".repeat(60));
+    return lines;
 }
 
 /**
@@ -67,19 +78,28 @@ export class BuildLogsDocumentProvider implements vscode.TextDocumentContentProv
     public readonly onDidChange = this.onDidChangeEmitter.event;
     private readonly states = new Map<string, ViewerState>();
 
-    public static buildUri(profile: string, region: string, buildId: string): vscode.Uri {
+    public static buildUri(profile: string, region: string, buildId: string, variant: "tail" | "full" = "tail"): vscode.Uri {
         const safeSegment = (value: string): string => encodeURIComponent(value).replace(/%2F/gi, "_");
+        const extension = variant === "full" ? ".full.log" : ".log";
         return vscode.Uri.from({
             scheme: BUILD_LOGS_URI_SCHEME,
-            path: `/${safeSegment(profile)}/${safeSegment(region)}/${safeSegment(buildId)}.log`
+            path: `/${safeSegment(profile)}/${safeSegment(region)}/${safeSegment(buildId)}${extension}`
         });
     }
 
-    /** Resets (or creates) the buffer for a build so each new viewing session starts clean. */
-    public open(uri: vscode.Uri, header: ViewerHeader): void {
+    /**
+     * Resets (or creates) the buffer for a build so each new viewing session starts clean. Pass
+     * `{ unbounded: true }` for a "full log" document so `appendLines` never truncates it.
+     */
+    public open(uri: vscode.Uri, header: ViewerHeader, options?: { unbounded?: boolean }): void {
         const key = uri.toString();
         this.clearRefreshTimer(this.states.get(key));
-        this.states.set(key, { header, lines: [], truncatedCount: 0 });
+        this.states.set(key, { header, lines: [], truncatedCount: 0, unbounded: options?.unbounded === true });
+    }
+
+    /** Looks up the header metadata (profile/region/buildId/...) for an open log document. */
+    public getHeader(uri: vscode.Uri): ViewerHeader | undefined {
+        return this.states.get(uri.toString())?.header;
     }
 
     public registerCanceller(uri: vscode.Uri, cancel: () => void): void {
@@ -102,11 +122,13 @@ export class BuildLogsDocumentProvider implements vscode.TextDocumentContentProv
 
         state.lines.push(...newLines);
 
-        const maxLines = getMaxViewerLines();
-        if (state.lines.length > maxLines) {
-            const overflow = state.lines.length - maxLines;
-            state.lines.splice(0, overflow);
-            state.truncatedCount += overflow;
+        if (!state.unbounded) {
+            const maxLines = getMaxViewerLines();
+            if (state.lines.length > maxLines) {
+                const overflow = state.lines.length - maxLines;
+                state.lines.splice(0, overflow);
+                state.truncatedCount += overflow;
+            }
         }
 
         this.scheduleRefresh(uri, state);
@@ -196,6 +218,11 @@ export function getBuildLogsDocumentProvider(): BuildLogsDocumentProvider {
 
 export function buildLogsDocumentUri(profile: string, region: string, buildId: string): vscode.Uri {
     return BuildLogsDocumentProvider.buildUri(profile, region, buildId);
+}
+
+/** URI for the unbounded "entire log history" variant of a build's log document. */
+export function buildFullLogsDocumentUri(profile: string, region: string, buildId: string): vscode.Uri {
+    return BuildLogsDocumentProvider.buildUri(profile, region, buildId, "full");
 }
 
 export function registerBuildLogsDocumentProvider(context: vscode.ExtensionContext): void {

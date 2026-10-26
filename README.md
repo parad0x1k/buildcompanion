@@ -95,6 +95,10 @@ If a permission is missing, the failed action shows a short notification and log
 - Build concurrency prompts (Wait, Trigger anyway, Cancel) with queue handling.
 - Batch deployment for selected projects with per-project branch memory and fallback branch.
 - Dedicated, scrollable per-build log viewer (its own editor tab) with throttled updates and a line-retention cap, so very large log streams stay responsive.
+- `View Full Log` loads a build's entire CloudWatch log history (from the very beginning) into a second, unbounded read-only tab — useful once the tailing viewer has truncated older lines.
+- Log output (in both the viewer and the output channel) has ANSI color codes and carriage-return progress-bar overwrites cleaned up, so colorized/progress-reporting build tool output stays readable.
+- Build statuses in the TreeView are shown as short, human-readable labels (e.g. "In Progress", "Timed Out") instead of raw AWS status codes.
+- Build History timestamps can be toggled between your detected local timezone and UTC, with the preference remembered across sessions.
 - View and edit a project's CodeBuild environment variables from a settings (gear) icon.
 - CloudWatch log streaming with recoverable retry/backoff behavior.
 - Failure summary extraction from recent log lines.
@@ -115,11 +119,13 @@ All contributed commands are available through the Command Palette. Several are 
 | `codebuild.searchProjects` | Search Projects | Toolbar, Command Palette | Filter project list |
 | `codebuild.clearProjectSearch` | Clear Project Search | Toolbar, Command Palette | Clear filter text |
 | `codebuild.toggleAutoRefresh` | Toggle Auto-Refresh | Settings row, toolbar, Command Palette | Enable or disable build polling |
+| `codebuild.toggleBuildTimeDisplay` | Toggle Build Time Display (Local/UTC) | Settings row, Command Palette | Switch Build History timestamps between local time and UTC |
 | `codebuild.setTemporaryCredentials` | Set AWS Credentials | Settings row, Command Palette | Store temporary credentials in SecretStorage |
 | `codebuild.triggerBuild` | Trigger Build | Project inline action, context menu, Command Palette | Start build for a project |
 | `codebuild.cancelBuild` | Cancel Build | Active build inline action, Command Palette | Stop a selected in-progress build |
 | `codebuild.cancelAllBuilds` | Cancel All Builds | Toolbar, Command Palette | Cancel in-progress and queued operations in current scope |
 | `codebuild.viewLogs` | View Logs | Build history inline action, Command Palette | Open the per-build log viewer and stream CloudWatch logs |
+| `codebuild.viewFullLogs` | View Full Log | Build history inline action, log viewer toolbar, Command Palette | Load a build's entire CloudWatch log history into a readable, unbounded tab |
 | `codebuild.retryBuild` | Retry Build | Build history inline action, Command Palette | Start a new build reusing a past build's source version |
 | `codebuild.editEnvironmentVariables` | Edit Environment Variables | Project inline action (gear icon), Command Palette | View/add/edit/remove a project's CodeBuild environment variables |
 | `codebuild.selectAllProjects` | Select All Visible Projects | Toolbar (conditional), Command Palette | Select visible projects for batch deploy |
@@ -194,6 +200,14 @@ Supported regions are fixed in this version. See [FEATURE_REFERENCE.md](FEATURE_
 3. The viewer keeps the most recent `codebuild.logsViewer.maxLines` lines (default `10000`) and shows a truncation notice once older lines are dropped, so extremely long-running builds stay responsive.
 4. Closing the log viewer tab stops streaming for that build (no more CloudWatch API calls are made on your behalf).
 5. For failed builds, a failure summary is extracted from recent log lines and appended to the viewer and the output channel.
+6. ANSI color codes and carriage-return progress-bar overwrites are cleaned up before display, so colorized or progress-reporting build tool output (e.g. `docker`, `npm`, `pip`) reads as plain text instead of stray control characters.
+
+### View the Entire Log History
+
+1. Click the `View Full Log` button in the log viewer tab's toolbar, or use the `View Full Log` inline action on a Build History / Active Builds row.
+2. The build's entire available CloudWatch log history is fetched from the very beginning (not just the recent tail) and shown in a second, unbounded read-only tab, leaving your original tailing viewer untouched.
+3. A cancellable progress notification reports how many lines have been fetched so far, and the tab fills in incrementally as pages arrive.
+4. This fetch is capped at `codebuild.logsViewer.maxFullLogLines` (default `50000` lines) as a safety limit; if reached, the tab's footer says so and names the setting to raise.
 
 ### Retry a Build
 
@@ -237,6 +251,7 @@ Supported regions are fixed in this version. See [FEATURE_REFERENCE.md](FEATURE_
 | `codebuild.logging.maxOutputLines` | `8000` | Output retention threshold; set `0` to disable automatic clearing |
 | `codebuild.logging.verbose` | `false` | Disable identifier redaction in output logs |
 | `codebuild.logsViewer.maxLines` | `10000` | Maximum lines retained in the per-build log viewer before older lines are truncated (minimum `500`) |
+| `codebuild.logsViewer.maxFullLogLines` | `50000` | Safety cap on total lines fetched by `View Full Log` (minimum `1000`) |
 
 ## Security Notes
 

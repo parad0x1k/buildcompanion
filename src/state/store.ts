@@ -14,6 +14,9 @@ export interface Project {
 
 export type BuildStatus = "IN_PROGRESS" | "SUCCEEDED" | "FAILED" | "STOPPED" | "FAULT" | "TIMED_OUT";
 
+/** Display preference for build timestamps shown in the tree view: the detected local timezone, or UTC. */
+export type BuildTimeDisplayFormat = "local" | "utc";
+
 export interface BuildState {
     id: string;
     projectName: string;
@@ -48,6 +51,7 @@ export interface AppState {
     currentProfile: string | null;
     currentRegion: string;
     autoRefreshEnabled: boolean;
+    buildTimeDisplayFormat: BuildTimeDisplayFormat;
     profiles: AwsProfile[];
     regions: string[];
     projectFilter: string;
@@ -143,6 +147,7 @@ export class AppStore {
             currentProfile: null,
             currentRegion: "us-east-1",
             autoRefreshEnabled: true,
+            buildTimeDisplayFormat: "local",
             profiles: [],
             regions: [],
             projectFilter: "",
@@ -245,6 +250,15 @@ export class AppStore {
         }
 
         this.state.autoRefreshEnabled = enabled;
+        this.refresh();
+    }
+
+    public setBuildTimeDisplayFormat(format: BuildTimeDisplayFormat): void {
+        if (this.state.buildTimeDisplayFormat === format) {
+            return;
+        }
+
+        this.state.buildTimeDisplayFormat = format;
         this.refresh();
     }
 

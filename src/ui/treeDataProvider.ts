@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
-import type { AppStore, BuildHistoryEntry, BuildState, Project } from "../state/store";
+import type { AppStore, BuildHistoryEntry, BuildState, BuildTimeDisplayFormat, Project } from "../state/store";
 import { logError, sanitizeLogValue } from "../logging/outputChannelManager";
+import { formatBuildStatusLabel } from "./statusLabels";
+import { formatBuildTimestamp } from "./timeFormatting";
 
 type RootNodeKind =
     | "settingsSection"
@@ -8,6 +10,7 @@ type RootNodeKind =
     | "credentialsSelector"
     | "regionSelector"
     | "autoRefreshToggle"
+    | "timeDisplayToggle"
     | "projectsSection"
     | "buildHistorySection"
     | "activeBuildsSection";
@@ -178,16 +181,11 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
         return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
     }
 
-    private formatHistoryCompletionLabel(build: BuildHistoryEntry): string | undefined {
-        const normalizedEndedAt = build.endedAt?.trim();
-        if (!normalizedEndedAt) {
+    private formatHistoryCompletionLabel(build: BuildHistoryEntry, timeFormat: BuildTimeDisplayFormat): string | undefined {
+        const endedAtText = formatBuildTimestamp(build.endedAt, timeFormat);
+        if (!endedAtText) {
             return undefined;
         }
-
-        const endedAtDate = new Date(normalizedEndedAt);
-        const endedAtText = Number.isFinite(endedAtDate.getTime())
-            ? endedAtDate.toLocaleString()
-            : normalizedEndedAt;
 
         if (build.status === "SUCCEEDED") {
             return `Completed: ${endedAtText}`;
@@ -282,6 +280,22 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                 };
                 return item;
             }
+            case "timeDisplayToggle": {
+                const state = this.store.getState();
+                const isUtc = state.buildTimeDisplayFormat === "utc";
+                const item = new vscode.TreeItem(
+                    `Build Times: ${isUtc ? "UTC" : "Local"}`,
+                    vscode.TreeItemCollapsibleState.None
+                );
+                item.description = isUtc ? "Click to switch to local time" : "Click to switch to UTC";
+                item.iconPath = new vscode.ThemeIcon("clock");
+                item.id = "codebuild.timeDisplayToggle";
+                item.command = {
+                    command: "codebuild.toggleBuildTimeDisplay",
+                    title: "Toggle Build Time Display"
+                };
+                return item;
+            }
             case "projectsSection": {
                 const state = this.store.getState();
                 const item = new vscode.TreeItem("Projects", vscode.TreeItemCollapsibleState.Expanded);
@@ -313,9 +327,12 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
             case "project": {
                 const state = this.store.getState();
                 const item = new vscode.TreeItem(element.project.name, vscode.TreeItemCollapsibleState.None);
-                item.description = element.project.lastBuildStatus ?? "No builds have been run yet";
+                const statusLabel = element.project.lastBuildStatus
+                    ? formatBuildStatusLabel(element.project.lastBuildStatus)
+                    : "No builds have been run yet";
+                item.description = statusLabel;
                 item.iconPath = this.getStatusIcon(element.project.lastBuildStatus, "project");
-                item.tooltip = `${element.project.name} - ${element.project.lastBuildStatus ?? "No builds have been run yet"}`;
+                item.tooltip = `${element.project.name} - ${statusLabel}`;
                 item.contextValue = "project";
                 item.id = `codebuild.project.${element.project.name}`;
 
@@ -369,9 +386,10 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                 return item;
             }
             case "historyBuild": {
+                const state = this.store.getState();
                 const branch = element.build.sourceVersion?.trim() || "unknown";
                 const initiator = element.build.initiator?.trim() || "unknown";
-                const completionLabel = this.formatHistoryCompletionLabel(element.build);
+                const completionLabel = this.formatHistoryCompletionLabel(element.build, state.buildTimeDisplayFormat);
                 const item = new vscode.TreeItem(
                     `${branch} (${initiator})`,
                     vscode.TreeItemCollapsibleState.None
@@ -382,7 +400,7 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                     `Build ID: ${element.build.id}`,
                     `Branch: ${branch}`,
                     `Triggered by: ${initiator}`,
-                    `Status: ${element.build.status}`,
+                    `Status: ${formatBuildStatusLabel(element.build.status)}`,
                     completionLabel ?? "Completed/failed time: unavailable"
                 ].join("\n");
                 item.contextValue = "build";
@@ -398,18 +416,19 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                         ? Date.now() - seenAt
                         : undefined;
                 const durationText = this.formatDuration(elapsedMs);
+                const statusLabel = formatBuildStatusLabel(element.build.status);
                 const item = new vscode.TreeItem(
                     `${element.build.projectName} • ${durationText}`,
                     vscode.TreeItemCollapsibleState.None
                 );
-                item.description = `${element.build.profile}/${element.build.region} • ${element.build.status}`;
+                item.description = `${element.build.profile}/${element.build.region} • ${statusLabel}`;
                 item.iconPath = this.getStatusIcon(element.build.status, "activeBuild");
                 item.tooltip = [
                     `Project: ${element.build.projectName}`,
                     `Profile: ${element.build.profile}`,
                     `Region: ${element.build.region}`,
                     `Build ID: ${element.build.id}`,
-                    `Status: ${element.build.status}`,
+                    `Status: ${statusLabel}`,
                     `Elapsed: ${durationText}`
                 ].join("\n");
                 item.contextValue = element.build.status === "IN_PROGRESS" ? "buildInProgress" : "build";
@@ -444,6 +463,7 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                 { kind: "profileSelector" },
                 { kind: "regionSelector" },
                 { kind: "autoRefreshToggle" },
+                { kind: "timeDisplayToggle" },
                 { kind: "credentialsSelector" }
             ];
 
