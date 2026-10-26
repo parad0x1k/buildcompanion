@@ -18,6 +18,8 @@ import { viewLogs } from "./viewLogs";
 import { viewFullLogs } from "./viewFullLogs";
 import { retryBuild } from "./retryBuild";
 import { editProjectEnvironmentVariables } from "./projectEnvironmentVariables";
+import { startBuildWithOverrides } from "./startBuildWithOverrides";
+import { editProjectConfiguration } from "./editProjectConfiguration";
 import { persistBuildTimeDisplayFormat } from "../state/timeDisplayPreference";
 
 let sharedLogsOutputChannel: vscode.OutputChannel | undefined;
@@ -130,12 +132,14 @@ export function registerCodeBuildCommands({ context, store }: CommandDeps): void
         register("codebuild.toggleBuildTimeDisplay", async () => toggleBuildTimeDisplay(context, store)),
         register("codebuild.setTemporaryCredentials", async () => setTemporaryCredentials(context, store)),
         register("codebuild.triggerBuild", async (arg?: unknown) => triggerBuild(context, store, arg)),
+        register("codebuild.startBuildWithOverrides", async (arg?: unknown) => startBuildWithOverrides(context, store, arg)),
         register("codebuild.cancelBuild", async (arg?: unknown) => cancelBuild(context, store, arg)),
         register("codebuild.cancelAllBuilds", async () => cancelAllBuilds(context, store)),
         register("codebuild.viewLogs", async (arg?: unknown) => viewLogs(context, store, arg)),
         register("codebuild.viewFullLogs", async (arg?: unknown) => viewFullLogs(context, store, arg)),
         register("codebuild.retryBuild", async (arg?: unknown) => retryBuild(context, store, arg)),
         register("codebuild.editEnvironmentVariables", async (arg?: unknown) => editProjectEnvironmentVariables(context, store, arg)),
+        register("codebuild.editProjectConfiguration", async (arg?: unknown) => editProjectConfiguration(context, store, arg)),
         register("codebuild.selectAllProjects", async () => selectAllProjects(store)),
         register("codebuild.deployAll", async () => deployAll(context, store)),
         register("codebuild.setBranch", async (arg?: unknown) => setBranch(store, arg)),

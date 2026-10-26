@@ -3,13 +3,19 @@ import {
     BatchGetProjectsCommand,
     ListBuildsCommand,
     ListBuildsForProjectCommand,
+    ListCuratedEnvironmentImagesCommand,
     ListProjectsCommand,
     RetryBuildCommand,
     StopBuildCommand,
     StartBuildCommand,
     UpdateProjectCommand,
     type Build,
-    type EnvironmentVariableType
+    type ComputeType,
+    type EnvironmentType,
+    type EnvironmentVariableType,
+    type ImagePullCredentialsType,
+    type ProjectEnvironment,
+    type ProjectSource
 } from "@aws-sdk/client-codebuild";
 import type * as vscode from "vscode";
 import { createCodeBuildClient } from "./clientFactory";
@@ -699,6 +705,314 @@ export async function setProjectEnvironmentVariables(
             region,
             operation: "Updating project environment variables",
             requiredPermissions: ["codebuild:BatchGetProjects", "codebuild:UpdateProject"]
+        });
+    }
+}
+
+/**
+ * Curated subset of a project's build-shaping settings (the "Tier 1" fields) that are safe to
+ * expose through a simplified, dropdown-friendly editor. Fields such as VPC config, compute
+ * fleets, and secondary sources are deliberately excluded - they have complex cross-field
+ * validation rules that are easy to break outside the AWS Console.
+ */
+export type ProjectConfigurationFields = {
+    environmentType: EnvironmentType;
+    image: string;
+    computeType: ComputeType;
+    privilegedMode: boolean;
+    imagePullCredentialsType: ImagePullCredentialsType;
+    environmentVariables: ProjectEnvironmentVariable[];
+    /** The project's `source.buildspec` override path/content. Empty string means "use buildspec.yml in the repo root". */
+    buildspec: string;
+    timeoutInMinutes: number;
+    queuedTimeoutInMinutes: number;
+};
+
+export async function getProjectConfiguration(
+    profile: string,
+    region: string,
+    projectName: string,
+    options?: CodeBuildServiceOptions
+): Promise<ProjectConfigurationFields> {
+    validateScope(profile, region);
+
+    const normalizedProjectName = projectName.trim();
+    if (!normalizedProjectName) {
+        throw new Error("Project name is required to read project configuration");
+    }
+
+    try {
+        const client = await createCodeBuildClient(profile, region, {
+            secretStorage: options?.secretStorage
+        });
+
+        const response = await client.send(new BatchGetProjectsCommand({ names: [normalizedProjectName] }), {
+            abortSignal: options?.signal
+        });
+
+        const project = response.projects?.[0];
+        if (!project?.environment) {
+            throw new Error(`Project '${normalizedProjectName}' was not found`);
+        }
+
+        const environmentVariables = (project.environment.environmentVariables ?? [])
+            .filter((variable): variable is { name: string; value: string; type?: EnvironmentVariableType } => (
+                Boolean(variable.name && variable.value !== undefined)
+            ))
+            .map((variable) => ({
+                name: variable.name,
+                value: variable.value,
+                type: variable.type ?? "PLAINTEXT" as const
+            }));
+
+        return {
+            environmentType: project.environment.type ?? "LINUX_CONTAINER",
+            image: project.environment.image ?? "",
+            computeType: project.environment.computeType ?? "BUILD_GENERAL1_SMALL",
+            privilegedMode: project.environment.privilegedMode ?? false,
+            imagePullCredentialsType: project.environment.imagePullCredentialsType ?? "CODEBUILD",
+            environmentVariables,
+            buildspec: project.source?.buildspec ?? "",
+            timeoutInMinutes: project.timeoutInMinutes ?? 60,
+            queuedTimeoutInMinutes: project.queuedTimeoutInMinutes ?? 480
+        };
+    } catch (error) {
+        throw toReadableError(error, {
+            profile,
+            region,
+            operation: "Reading project configuration",
+            requiredPermissions: ["codebuild:BatchGetProjects"]
+        });
+    }
+}
+
+/**
+ * Permanently updates a project's configuration. Only fields present on `changes` are modified;
+ * everything else (including project settings this editor doesn't expose, like VPC config or
+ * compute fleets) is read fresh from AWS and preserved untouched, the same read-modify-write
+ * pattern `setProjectEnvironmentVariables` already uses.
+ */
+export async function updateProjectConfiguration(
+    profile: string,
+    region: string,
+    projectName: string,
+    changes: Partial<ProjectConfigurationFields>,
+    options?: CodeBuildServiceOptions
+): Promise<void> {
+    validateScope(profile, region);
+
+    const normalizedProjectName = projectName.trim();
+    if (!normalizedProjectName) {
+        throw new Error("Project name is required to update project configuration");
+    }
+
+    try {
+        const client = await createCodeBuildClient(profile, region, {
+            secretStorage: options?.secretStorage
+        });
+
+        const existing = await client.send(new BatchGetProjectsCommand({ names: [normalizedProjectName] }), {
+            abortSignal: options?.signal
+        });
+
+        const project = existing.projects?.[0];
+        if (!project?.environment) {
+            throw new Error(`Project '${normalizedProjectName}' was not found`);
+        }
+
+        const buildspecChanged = changes.buildspec !== undefined;
+        const existingSource = project.source;
+        if (buildspecChanged && !existingSource) {
+            // Every real CodeBuild project has a source; this only guards against an
+            // unexpected/malformed API response instead of silently dropping the change.
+            throw new Error(`Project '${normalizedProjectName}' has no source configuration to apply a buildspec change to`);
+        }
+
+        const environmentChanged = (
+            changes.environmentType !== undefined
+            || changes.image !== undefined
+            || changes.computeType !== undefined
+            || changes.privilegedMode !== undefined
+            || changes.imagePullCredentialsType !== undefined
+            || changes.environmentVariables !== undefined
+        );
+
+        const updatedEnvironment: ProjectEnvironment | undefined = environmentChanged ? {
+            ...project.environment,
+            type: changes.environmentType ?? project.environment.type,
+            image: changes.image ?? project.environment.image,
+            computeType: changes.computeType ?? project.environment.computeType,
+            privilegedMode: changes.privilegedMode ?? project.environment.privilegedMode,
+            imagePullCredentialsType: changes.imagePullCredentialsType ?? project.environment.imagePullCredentialsType,
+            environmentVariables: changes.environmentVariables
+                ? changes.environmentVariables.map((variable) => ({
+                    name: variable.name,
+                    value: variable.value,
+                    type: variable.type
+                }))
+                : project.environment.environmentVariables
+        } : undefined;
+
+        const updatedSource: ProjectSource | undefined = (buildspecChanged && existingSource) ? {
+            ...existingSource,
+            buildspec: changes.buildspec
+        } : undefined;
+
+        await client.send(new UpdateProjectCommand({
+            name: normalizedProjectName,
+            environment: updatedEnvironment,
+            source: updatedSource,
+            timeoutInMinutes: changes.timeoutInMinutes,
+            queuedTimeoutInMinutes: changes.queuedTimeoutInMinutes
+        }), {
+            abortSignal: options?.signal
+        });
+    } catch (error) {
+        throw toReadableError(error, {
+            profile,
+            region,
+            operation: "Updating project configuration",
+            requiredPermissions: ["codebuild:BatchGetProjects", "codebuild:UpdateProject"]
+        });
+    }
+}
+
+export type CuratedEnvironmentImage = {
+    name: string;
+    description?: string;
+    versions: string[];
+};
+
+export type CuratedEnvironmentLanguage = {
+    language: string;
+    images: CuratedEnvironmentImage[];
+};
+
+export type CuratedEnvironmentPlatform = {
+    platform: string;
+    languages: CuratedEnvironmentLanguage[];
+};
+
+/** Wraps `ListCuratedEnvironmentImages` - the same catalog the AWS Console uses for its Image picker. */
+export async function listCuratedEnvironmentImages(
+    profile: string,
+    region: string,
+    options?: CodeBuildServiceOptions
+): Promise<CuratedEnvironmentPlatform[]> {
+    validateScope(profile, region);
+
+    try {
+        const client = await createCodeBuildClient(profile, region, {
+            secretStorage: options?.secretStorage
+        });
+
+        const response = await client.send(new ListCuratedEnvironmentImagesCommand({}), {
+            abortSignal: options?.signal
+        });
+
+        return (response.platforms ?? [])
+            .map((platform): CuratedEnvironmentPlatform | null => {
+                if (!platform.platform) {
+                    return null;
+                }
+
+                const languages = (platform.languages ?? [])
+                    .map((language): CuratedEnvironmentLanguage | null => {
+                        if (!language.language) {
+                            return null;
+                        }
+
+                        const images = (language.images ?? [])
+                            .map((image): CuratedEnvironmentImage | null => (
+                                image.name ? { name: image.name, description: image.description, versions: image.versions ?? [] } : null
+                            ))
+                            .filter((image): image is CuratedEnvironmentImage => image !== null);
+
+                        return { language: language.language, images };
+                    })
+                    .filter((language): language is CuratedEnvironmentLanguage => language !== null);
+
+                return { platform: platform.platform, languages };
+            })
+            .filter((platform): platform is CuratedEnvironmentPlatform => platform !== null);
+    } catch (error) {
+        throw toReadableError(error, {
+            profile,
+            region,
+            operation: "Loading AWS managed build images",
+            requiredPermissions: ["codebuild:ListCuratedEnvironmentImages"]
+        });
+    }
+}
+
+/**
+ * Build-scoped overrides for `StartBuild`. Every field is optional: an omitted field tells
+ * CodeBuild to use the project's current saved configuration for that field, exactly like
+ * leaving a field untouched in the AWS Console's "Start build with overrides" screen. Nothing
+ * here is ever written back to the project.
+ */
+export type BuildOverrides = {
+    sourceVersion?: string;
+    environmentTypeOverride?: EnvironmentType;
+    imageOverride?: string;
+    computeTypeOverride?: ComputeType;
+    privilegedModeOverride?: boolean;
+    imagePullCredentialsTypeOverride?: ImagePullCredentialsType;
+    environmentVariablesOverride?: ProjectEnvironmentVariable[];
+    buildspecOverride?: string;
+    timeoutInMinutesOverride?: number;
+    queuedTimeoutInMinutesOverride?: number;
+};
+
+export async function startCodeBuildWithOverrides(
+    profile: string,
+    region: string,
+    projectName: string,
+    overrides: BuildOverrides,
+    options?: CodeBuildServiceOptions
+): Promise<BuildState> {
+    validateScope(profile, region);
+
+    const normalizedProjectName = projectName.trim();
+    if (!normalizedProjectName) {
+        throw new Error("Project name is required to start a build");
+    }
+
+    try {
+        const client = await createCodeBuildClient(profile, region, {
+            secretStorage: options?.secretStorage
+        });
+
+        const normalizedBranch = overrides.sourceVersion?.trim();
+        const response = await client.send(new StartBuildCommand({
+            projectName: normalizedProjectName,
+            sourceVersion: normalizedBranch ? normalizedBranch : undefined,
+            environmentTypeOverride: overrides.environmentTypeOverride,
+            imageOverride: overrides.imageOverride,
+            computeTypeOverride: overrides.computeTypeOverride,
+            privilegedModeOverride: overrides.privilegedModeOverride,
+            imagePullCredentialsTypeOverride: overrides.imagePullCredentialsTypeOverride,
+            environmentVariablesOverride: overrides.environmentVariablesOverride?.map((variable) => ({
+                name: variable.name,
+                value: variable.value,
+                type: variable.type
+            })),
+            buildspecOverride: overrides.buildspecOverride,
+            timeoutInMinutesOverride: overrides.timeoutInMinutesOverride,
+            queuedTimeoutInMinutesOverride: overrides.queuedTimeoutInMinutesOverride
+        }));
+
+        const buildState = response.build ? toBuildState(response.build, profile, region) : null;
+        if (!buildState) {
+            throw new Error("StartBuild did not return a valid build payload");
+        }
+
+        return buildState;
+    } catch (error) {
+        throw toReadableError(error, {
+            profile,
+            region,
+            operation: "Starting CodeBuild build with overrides"
         });
     }
 }
