@@ -13,7 +13,7 @@ import { ensureDestructiveActionsAllowed } from "./profileCommands";
 
 type EnvVarType = ProjectEnvironmentVariable["type"];
 
-const ENV_VAR_TYPES: Array<{ label: string; description: string; type: EnvVarType }> = [
+export const ENV_VAR_TYPES: Array<{ label: string; description: string; type: EnvVarType }> = [
     { label: "PLAINTEXT", description: "Stored directly on the project. Avoid for secrets.", type: "PLAINTEXT" },
     { label: "PARAMETER_STORE", description: "Value is a Systems Manager Parameter Store name", type: "PARAMETER_STORE" },
     { label: "SECRETS_MANAGER", description: "Value is a Secrets Manager secret name", type: "SECRETS_MANAGER" }
@@ -24,7 +24,7 @@ type EditorAction =
     | { kind: "edit"; variable: ProjectEnvironmentVariable }
     | { kind: "save" };
 
-function validateVariableName(value: string, existing: ProjectEnvironmentVariable[]): string | undefined {
+export function validateVariableName(value: string, existing: ProjectEnvironmentVariable[]): string | undefined {
     const trimmed = value.trim();
     if (!trimmed) {
         return "Variable name is required";
@@ -41,7 +41,7 @@ function validateVariableName(value: string, existing: ProjectEnvironmentVariabl
     return undefined;
 }
 
-async function promptForVariableDetails(
+export async function promptForVariableDetails(
     existingOtherVariables: ProjectEnvironmentVariable[],
     initial?: ProjectEnvironmentVariable
 ): Promise<ProjectEnvironmentVariable | undefined> {

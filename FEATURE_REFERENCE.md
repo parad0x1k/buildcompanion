@@ -25,6 +25,9 @@ This document is the exhaustive reference for supported behavior in the current 
 - Human-readable build status labels in the tree view (e.g. `IN_PROGRESS` → "In Progress") with a generic title-case fallback for any unrecognized status
 - Build timestamp Local/UTC display toggle (`codebuild.toggleBuildTimeDisplay`), persisted across sessions, with an explicit timezone abbreviation shown in both modes
 - Project environment variable viewing and editing (`BatchGetProjects` / `UpdateProject`)
+- "Start Build with Overrides" (`codebuild.startBuildWithOverrides`): one-time, build-scoped overrides (branch, environment variables, image, compute type, environment type, buildspec, privileged mode, image pull credentials, timeouts) sent via `StartBuild`'s `*Override` fields; nothing is written back to the project
+- "Edit Project Configuration" (`codebuild.editProjectConfiguration`): the same curated setting categories as the override flow, but permanently saved to the project via `UpdateProject`, with an explicit "every future build will use these values" confirmation before saving
+- AWS-managed build image browsing (`ListCuratedEnvironmentImages`) for a cascading Platform → Runtime → Image → Version picker, with a custom-image fallback for ECR/Docker Hub images
 - Git branch suggestions and branch validation
 - Scope-aware state (profile + region) for branches, selections, queues, and safety blocks
 - Managed output channel logging with redaction and retention controls
@@ -53,12 +56,14 @@ This document is the exhaustive reference for supported behavior in the current 
 | `codebuild.toggleBuildTimeDisplay` | Toggle Build Time Display (Local/UTC) | BuildCompanion |
 | `codebuild.setTemporaryCredentials` | Set AWS Credentials | BuildCompanion |
 | `codebuild.triggerBuild` | Trigger Build | BuildCompanion |
+| `codebuild.startBuildWithOverrides` | Start Build with Overrides... | BuildCompanion |
 | `codebuild.cancelBuild` | Cancel Build | BuildCompanion |
 | `codebuild.cancelAllBuilds` | Cancel All Builds | BuildCompanion |
 | `codebuild.viewLogs` | View Logs | BuildCompanion |
 | `codebuild.viewFullLogs` | View Full Log | BuildCompanion |
 | `codebuild.retryBuild` | Retry Build | BuildCompanion |
 | `codebuild.editEnvironmentVariables` | Edit Environment Variables | BuildCompanion |
+| `codebuild.editProjectConfiguration` | Edit Project Configuration... | BuildCompanion |
 | `codebuild.selectAllProjects` | Select All Visible Projects | BuildCompanion |
 | `codebuild.deployAll` | Deploy Selected Projects | BuildCompanion |
 | `codebuild.setBranch` | Set Branch | BuildCompanion |
@@ -93,6 +98,8 @@ This document is the exhaustive reference for supported behavior in the current 
 
 - `codebuild.triggerBuild`: `view == codebuildView && viewItem == project`
 - `codebuild.setBranch`: `view == codebuildView && viewItem == project`
+- `codebuild.startBuildWithOverrides`: `view == codebuildView && viewItem == project` (right-click menu only, no inline icon - kept out of the hover row to avoid icon clutter)
+- `codebuild.editProjectConfiguration`: `view == codebuildView && viewItem == project` (right-click menu only, no inline icon, same reasoning)
 - `codebuild.editEnvironmentVariables`: `view == codebuildView && viewItem == project`
 - `codebuild.retryBuild`: `view == codebuildView && viewItem == build`
 - `codebuild.viewLogs`: `view == codebuildView && viewItem == build`
@@ -251,6 +258,17 @@ Default region resolution order:
 - Update environment variables (`BatchGetProjects` to fetch the current full `environment` configuration, then `UpdateProject`): since `UpdateProject` replaces the entire `environment` sub-object, every other field (image, compute type, privileged mode, registry credentials, etc.) is preserved unchanged and only `environmentVariables` is replaced.
 - Edits are staged in memory (add/edit/remove) in a QuickPick-driven flow and only written to AWS when the user explicitly chooses "Save changes to AWS"; dismissing without saving discards all staged edits.
 - Variable values are never written to the output channel log; only the count of updated variables is logged.
+
+### Build Overrides and Project Configuration Editing
+
+Both flows below share one QuickPick-driven "category hub" (`src/commands/projectConfigurationWizard.ts`) covering the same curated set of settings - environment variables, compute type, environment type, image, buildspec, privileged mode, image pull credentials, and build/queued timeouts - so the UI stays identical regardless of which mode is active. Fields with cross-field validation rules that are easy to break outside the AWS Console (VPC config, compute fleets, secondary sources, logs config, encryption key, tags, concurrency limit) are intentionally not exposed here.
+
+- **Start Build with Overrides** (`codebuild.startBuildWithOverrides`): sends only the fields the user actually changed as `StartBuild` `*Override` parameters (`environmentVariablesOverride`, `imageOverride`, `computeTypeOverride`, `environmentTypeOverride`, `buildspecOverride`, `privilegedModeOverride`, `imagePullCredentialsTypeOverride`, `timeoutInMinutesOverride`, `queuedTimeoutInMinutesOverride`, plus `sourceVersion` for the branch). Any field left unchanged is omitted entirely, so CodeBuild falls back to the project's current saved value - nothing is ever written back to the project. If a build is already in progress, the user is offered "Start Anyway" (CodeBuild projects can run concurrent builds) rather than the queueing "Wait" flow used by `codebuild.triggerBuild`, since a queued override build would otherwise have no way to carry its overrides through to the later auto-start.
+- **Edit Project Configuration** (`codebuild.editProjectConfiguration`): permanently saves the same category selections via `UpdateProjectConfiguration`/`UpdateProject`, using the same read-modify-write pattern as environment variable editing (only changed fields are merged in; everything else, including settings this editor doesn't expose, is preserved untouched).
+- Both flows render a plain-English diff (e.g. `Compute type: Small -> Medium`) before any AWS call, and require an explicit modal confirmation worded differently per mode: the override flow's button reads "Start Build" with detail text clarifying the change is one-time only; the permanent flow's button reads "Update Project" with detail text stating every future build will use the new values.
+- The image picker can browse the live AWS-managed catalog (`ListCuratedEnvironmentImages`) as a cascading Platform -> Runtime -> Image -> Version QuickPick, or accept a custom ECR/Docker Hub image URI.
+- The buildspec picker offers the project's current buildspec (no-op), a repository-relative path, or browsing a local file whose contents are sent inline as the buildspec.
+- Both commands are reachable only from the project's right-click context menu, not as additional inline hover icons, to avoid crowding the tree row.
 
 ### Build History
 
@@ -520,7 +538,7 @@ Required-permission detail:
 
 - Call sites may supply `requiredPermissions: string[]` (IAM action names) alongside the error context.
 - When an error is classified as permission denied, the mapped message appends `Required IAM permission(s): <list>` so the user knows exactly what to grant, without needing to inspect the raw AWS error.
-- Currently supplied for: retrying a build (`codebuild:RetryBuild`), reading project environment variables (`codebuild:BatchGetProjects`), and updating project environment variables (`codebuild:BatchGetProjects`, `codebuild:UpdateProject`).
+- Currently supplied for: retrying a build (`codebuild:RetryBuild`), reading project environment variables (`codebuild:BatchGetProjects`), updating project environment variables (`codebuild:BatchGetProjects`, `codebuild:UpdateProject`), reading the curated project configuration (`codebuild:BatchGetProjects`), permanently updating project configuration (`codebuild:BatchGetProjects`, `codebuild:UpdateProject`), and browsing AWS-managed build images (`codebuild:ListCuratedEnvironmentImages`). Starting a build with overrides uses the same `codebuild:StartBuild` permission as a normal trigger - no additional IAM action is required for the Tier-1 override fields.
 
 No-profile message:
 
@@ -612,6 +630,8 @@ No-profile message:
 - Logs are presented in output channel format (no custom interactive viewer).
 - Git branch suggestions rely on first workspace folder path and local git availability.
 - Extension scope is AWS CodeBuild; no CodePipeline-specific command surface.
+- "Start Build with Overrides" and "Edit Project Configuration" intentionally expose only a curated Tier-1 field set (see above); settings like VPC config, compute fleets, secondary sources, logs config, encryption key, tags, and concurrency limit are not editable from BuildCompanion and must be changed in the AWS Console.
+- Overridden/edited values are not remembered between invocations (each run starts from the project's current saved configuration); only the branch field persists across invocations, via the same per-scope branch memory used by `codebuild.triggerBuild`/`codebuild.setBranch`.
 
 ## Source Index
 
@@ -620,6 +640,9 @@ Primary implementation files for this reference:
 - `package.json`
 - `src/extension.ts`
 - `src/commands/index.ts`
+- `src/commands/projectConfigurationWizard.ts`
+- `src/commands/startBuildWithOverrides.ts`
+- `src/commands/editProjectConfiguration.ts`
 - `src/state/store.ts`
 - `src/ui/treeDataProvider.ts`
 - `src/monitor/buildMonitor.ts`

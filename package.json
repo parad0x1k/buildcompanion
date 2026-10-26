@@ -109,6 +109,12 @@
         "icon": "$(play)"
       },
       {
+        "command": "codebuild.startBuildWithOverrides",
+        "title": "Start Build with Overrides...",
+        "category": "BuildCompanion",
+        "icon": "$(play-circle)"
+      },
+      {
         "command": "codebuild.cancelBuild",
         "title": "Cancel Build",
         "category": "BuildCompanion",
@@ -143,6 +149,12 @@
         "title": "Edit Environment Variables",
         "category": "BuildCompanion",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "codebuild.editProjectConfiguration",
+        "title": "Edit Project Configuration...",
+        "category": "BuildCompanion",
+        "icon": "$(wrench)"
       },
       {
         "command": "codebuild.selectAllProjects",
@@ -251,6 +263,16 @@
           "command": "codebuild.setBranch",
           "when": "view == codebuildView && viewItem == project",
           "group": "navigation@2"
+        },
+        {
+          "command": "codebuild.startBuildWithOverrides",
+          "when": "view == codebuildView && viewItem == project",
+          "group": "navigation@3"
+        },
+        {
+          "command": "codebuild.editProjectConfiguration",
+          "when": "view == codebuildView && viewItem == project",
+          "group": "navigation@4"
         },
         {
           "command": "codebuild.deployAll",
