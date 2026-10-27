@@ -252,6 +252,7 @@ Supported regions are fixed in this version. See [FEATURE_REFERENCE.md](FEATURE_
 | `codebuild.logging.verbose` | `false` | Disable identifier redaction in output logs |
 | `codebuild.logsViewer.maxLines` | `10000` | Maximum lines retained in the per-build log viewer before older lines are truncated (minimum `500`) |
 | `codebuild.logsViewer.maxFullLogLines` | `50000` | Safety cap on total lines fetched by `View Full Log` (minimum `1000`) |
+| `codebuild.localTimeZone` | `""` (auto-detect) | IANA time zone (e.g. `America/New_York`) used for the "Local" build time display; see [Troubleshooting](#local-build-times-dont-change-in-a-dev-containerwslssh-remote) |
 
 ## Security Notes
 
@@ -284,6 +285,11 @@ Supported regions are fixed in this version. See [FEATURE_REFERENCE.md](FEATURE_
 
 - Ensure CloudWatch Logs permissions are granted.
 - Some builds may complete without available log stream metadata.
+
+### Local build times don't change in a Dev Container/WSL/SSH remote
+
+- BuildCompanion is a workspace extension, so its host process (and the "Local" timezone it detects) runs on the remote/container machine, not your physical machine. Minimal container images commonly default their system clock to UTC, which makes the `Build Times: Local`/`Build Times: UTC` toggle look like it has no effect.
+- Set `codebuild.localTimeZone` to your actual IANA time zone (e.g. `America/New_York`) to override auto-detection.
 
 ## Known Limitations
 

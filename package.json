@@ -378,6 +378,11 @@
           "maximum": 100,
           "description": "Maximum number of build history entries retained per project in the tree view."
         },
+        "codebuild.localTimeZone": {
+          "type": "string",
+          "default": "",
+          "description": "IANA time zone (e.g. America/New_York) used for the \"Local\" build time display, overriding auto-detection from the extension host's system clock. Leave empty to auto-detect. Set this when BuildCompanion runs in a Dev Container, WSL, or SSH remote: auto-detection reflects that remote machine's time zone (often UTC in minimal container images), not your physical machine's, which can make the Local/UTC toggle look like it has no effect."
+        },
         "codebuild.useFipsEndpoint": {
           "type": "boolean",
           "default": false,
