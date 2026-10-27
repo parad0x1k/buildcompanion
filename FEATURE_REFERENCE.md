@@ -140,7 +140,7 @@ Rows:
 - Profile (command: `codebuild.switchProfile`)
 - Region (command: `codebuild.switchRegion`)
 - Auto Refresh toggle (command: `codebuild.toggleAutoRefresh`)
-- Build Times Local/UTC toggle, label `Build Times: Local` or `Build Times: UTC` (command: `codebuild.toggleBuildTimeDisplay`); defaults to `Local` and persists across sessions in `globalState` key `codebuild.buildTimeDisplayFormat`
+- Build Times Local/UTC toggle, label `Build Times: Local` or `Build Times: UTC` (command: `codebuild.toggleBuildTimeDisplay`); defaults to `Local` and persists across sessions in `globalState` key `codebuild.buildTimeDisplayFormat`. "Local" is resolved via `Intl.DateTimeFormat` on the extension host process - in a remote/container session (`vscode.env.remoteName` set) with no `codebuild.localTimeZone` override, the row's tooltip explains that this is the remote machine's timezone, not necessarily the user's
 - Credentials (command: `codebuild.setTemporaryCredentials`)
 
 ### Projects Section
@@ -555,6 +555,7 @@ No-profile message:
 | `codebuild.logging.verbose` | boolean | `false` | n/a | Redaction toggle for identifiers |
 | `codebuild.logsViewer.maxLines` | integer | `10000` | `>=500` | Per-build log viewer line-retention cap before truncation |
 | `codebuild.logsViewer.maxFullLogLines` | integer | `50000` | `>=1000` | Safety cap on total lines fetched by "View Full Log" |
+| `codebuild.localTimeZone` | string | `""` | valid IANA zone or empty | Overrides auto-detected system timezone used for the "Local" build time display; falls back to auto-detect on empty/invalid value |
 
 ## Environment Variable Reference
 

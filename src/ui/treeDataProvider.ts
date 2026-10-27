@@ -181,8 +181,15 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
         return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
     }
 
+    // Empty string means "auto-detect" (undefined) - see the codebuild.localTimeZone setting
+    // and the comment above DEFAULT_LOCAL_TIME_FORMATTER in ui/timeFormatting.ts for why this
+    // override exists (remote/container extension hosts don't share the developer's timezone).
+    private getLocalTimeZoneOverride(): string | undefined {
+        return vscode.workspace.getConfiguration("codebuild").get<string>("localTimeZone", "").trim() || undefined;
+    }
+
     private formatHistoryCompletionLabel(build: BuildHistoryEntry, timeFormat: BuildTimeDisplayFormat): string | undefined {
-        const endedAtText = formatBuildTimestamp(build.endedAt, timeFormat);
+        const endedAtText = formatBuildTimestamp(build.endedAt, timeFormat, this.getLocalTimeZoneOverride());
         if (!endedAtText) {
             return undefined;
         }
@@ -294,6 +301,14 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                     command: "codebuild.toggleBuildTimeDisplay",
                     title: "Toggle Build Time Display"
                 };
+
+                if (!isUtc && vscode.env.remoteName && !this.getLocalTimeZoneOverride()) {
+                    // Workspace extension host runs remotely: "Local" reflects that machine's
+                    // system timezone (often UTC in container images), which can look identical
+                    // to UTC and make this toggle appear to do nothing.
+                    item.tooltip = "Running in a remote/container session: \"Local\" uses that machine's system timezone, which may not match yours. Set the codebuild.localTimeZone setting to override.";
+                }
+
                 return item;
             }
             case "projectsSection": {

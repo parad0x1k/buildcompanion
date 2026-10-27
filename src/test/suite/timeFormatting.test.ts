@@ -30,5 +30,28 @@ describe("ui/timeFormatting", () => {
             // well-formed, non-empty, timezone-qualified strings.
             assert.ok(localFormatted.length > 0 && utcFormatted!.length > 0);
         });
+
+        it("honors an explicit localTimeZoneOverride instead of the host's detected timezone", () => {
+            // This is exactly the scenario a remote/container extension host hits: the detected
+            // system timezone (often UTC there) makes "local" indistinguishable from "utc". An
+            // explicit IANA override should always win and differ from a plain UTC render.
+            const overridden = formatBuildTimestamp("2026-01-15T13:45:30.000Z", "local", "America/New_York");
+            const utcFormatted = formatBuildTimestamp("2026-01-15T13:45:30.000Z", "utc");
+            assert.ok(overridden);
+            assert.match(overridden, /2026/);
+            assert.notEqual(overridden, utcFormatted);
+        });
+
+        it("falls back to auto-detection for an empty/whitespace-only override", () => {
+            const bareLocal = formatBuildTimestamp("2026-01-15T13:45:30.000Z", "local");
+            assert.equal(formatBuildTimestamp("2026-01-15T13:45:30.000Z", "local", ""), bareLocal);
+            assert.equal(formatBuildTimestamp("2026-01-15T13:45:30.000Z", "local", "   "), bareLocal);
+        });
+
+        it("falls back to auto-detection instead of throwing for an invalid timezone override", () => {
+            const bareLocal = formatBuildTimestamp("2026-01-15T13:45:30.000Z", "local");
+            assert.doesNotThrow(() => formatBuildTimestamp("2026-01-15T13:45:30.000Z", "local", "Not/A_Real_Zone"));
+            assert.equal(formatBuildTimestamp("2026-01-15T13:45:30.000Z", "local", "Not/A_Real_Zone"), bareLocal);
+        });
     });
 });
