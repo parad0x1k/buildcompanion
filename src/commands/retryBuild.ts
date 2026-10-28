@@ -5,6 +5,7 @@ import type { AppStore, BuildState } from "../state/store";
 import { logError, sanitizeLogValue } from "../logging/outputChannelManager";
 import { formatProjectScope, formatScope, notify } from "../notifications/notifier";
 import {
+    formatBranchForNotification,
     formatSanitizedScope,
     notifyDeploymentTriggered,
     resolveBuildFromArg,
@@ -82,7 +83,7 @@ export async function retryBuild(
         return;
     }
 
-    showShortStatusMessage(`Retrying build for ${formatProjectScope(projectName, profile, region)}...`);
+    showShortStatusMessage(`Retrying build for ${formatProjectScope(projectName, profile, region)} using ${formatBranchForNotification(selectedBuild.sourceVersion)}...`);
 
     try {
         const build = await retryBuildService(profile, region, buildId, { secretStorage: context.secrets });
@@ -96,10 +97,11 @@ export async function retryBuild(
         store.batchUpdate(() => {
             store.setActiveBuilds(nextActiveBuilds);
             store.setProjects(setProjectStatus(latestState.projects, projectName, build.status));
+            store.markBuildAsExtensionTriggered(build.id);
         });
 
         notifyDeploymentTriggered(projectName, profile, region, build.sourceVersion);
-        showShortStatusMessage(`Build retry started for ${formatProjectScope(projectName, profile, region)}`);
+        showShortStatusMessage(`Build retry started for ${formatProjectScope(projectName, profile, region)} using ${formatBranchForNotification(build.sourceVersion)}`);
         warnCompletionPopupsPaused(state);
     } catch (error) {
         const message = getUserFriendlyErrorMessage(error, {

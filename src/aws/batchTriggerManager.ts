@@ -1,3 +1,4 @@
+import * as vscode from "vscode";
 import { startCodeBuild, type CodeBuildServiceOptions } from "./codebuildService";
 import { getUserFriendlyErrorMessage } from "./errorHandling";
 import type { BuildState } from "../state/store";
@@ -23,10 +24,27 @@ export type BatchTriggerResult = {
     cancelled: boolean;
 };
 
-export const MAX_BATCH_SELECTED_PROJECTS = 25;
+// Absolute ceiling regardless of configuration; see getConfiguredMaxBatchSelectedProjects for the user-configurable effective limit.
+export const MAX_BATCH_SELECTED_PROJECTS = 100;
 export const MIN_BATCH_DELAY_MS = 1000;
 const MAX_DELAY_MS = 60_000;
 const CANCEL_CHECK_INTERVAL_MS = 250;
+const MAX_SELECTED_PROJECTS_CONFIG_KEY = "batchDeploy.maxSelectedProjects";
+const DEFAULT_MAX_BATCH_SELECTED_PROJECTS = 25;
+
+export function getConfiguredMaxBatchSelectedProjects(): number {
+    const configured = vscode.workspace.getConfiguration("codebuild").get<number>(
+        MAX_SELECTED_PROJECTS_CONFIG_KEY,
+        DEFAULT_MAX_BATCH_SELECTED_PROJECTS
+    );
+
+    const numeric = Number(configured);
+    if (!Number.isFinite(numeric)) {
+        return DEFAULT_MAX_BATCH_SELECTED_PROJECTS;
+    }
+
+    return Math.min(MAX_BATCH_SELECTED_PROJECTS, Math.max(1, Math.floor(numeric)));
+}
 
 function formatSanitizedScope(profile: string, region: string): string {
     return `${sanitizeLogValue(profile, "profile")} (${sanitizeLogValue(region, "region")})`;

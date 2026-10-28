@@ -1,5 +1,5 @@
 import * as assert from "node:assert/strict";
-import { createAppStore, type BuildHistoryEntry, type BuildState } from "../../state/store";
+import { createAppStore, type BuildHistoryEntry, type BuildState, type FailedBuildEntry } from "../../state/store";
 
 function makeBuild(overrides: Partial<BuildState> = {}): BuildState {
     return {
@@ -225,4 +225,121 @@ describe("state/store", () => {
             assert.equal(store.getState().activeBuilds[0].id, "build-1");
         });
     });
+
+    describe("extension-triggered build tracking", () => {
+        it("tracks and clears build IDs the extension started", () => {
+            const store = createAppStore();
+
+            assert.equal(store.isExtensionTriggeredBuild("build-1"), false);
+
+            store.markBuildAsExtensionTriggered("build-1");
+            assert.equal(store.isExtensionTriggeredBuild("build-1"), true);
+
+            store.clearExtensionTriggeredBuild("build-1");
+            assert.equal(store.isExtensionTriggeredBuild("build-1"), false);
+        });
+
+        it("does not fire onDidRefresh (purely internal bookkeeping, not rendered)", () => {
+            const store = createAppStore();
+            let refreshCount = 0;
+            store.onDidRefresh(() => { refreshCount += 1; });
+
+            store.markBuildAsExtensionTriggered("build-1");
+            store.clearExtensionTriggeredBuild("build-1");
+
+            assert.equal(refreshCount, 0);
+        });
+    });
+
+    describe("failed builds", () => {
+        function makeFailedEntry(overrides: Partial<FailedBuildEntry> = {}): FailedBuildEntry {
+            return {
+                id: "build-1",
+                projectName: "demo",
+                status: "FAILED",
+                profile: "dev",
+                region: "us-east-1",
+                sourceVersion: "main",
+                failedAt: "2026-01-01T00:00:00.000Z",
+                ...overrides
+            };
+        }
+
+        it("adds and retrieves failed builds scoped by profile/region", () => {
+            const store = createAppStore();
+            store.addFailedBuild(makeFailedEntry());
+            store.addFailedBuild(makeFailedEntry({ id: "build-2", profile: "other", region: "eu-west-1" }));
+
+            assert.equal(store.getFailedBuilds("dev", "us-east-1").length, 1);
+            assert.equal(store.getFailedBuilds("dev", "us-east-1")[0].id, "build-1");
+            assert.equal(store.getFailedBuilds("other", "eu-west-1").length, 1);
+        });
+
+        it("deduplicates by build ID, keeping the latest entry", () => {
+            const store = createAppStore();
+            store.addFailedBuild(makeFailedEntry({ sourceVersion: "main" }));
+            store.addFailedBuild(makeFailedEntry({ sourceVersion: "main-retry" }));
+
+            const failed = store.getFailedBuilds("dev", "us-east-1");
+            assert.equal(failed.length, 1);
+            assert.equal(failed[0].sourceVersion, "main-retry");
+        });
+
+        it("caps the list per scope at the most recent 10 entries", () => {
+            const store = createAppStore();
+            for (let index = 0; index < 12; index += 1) {
+                store.addFailedBuild(makeFailedEntry({ id: `build-${index}`, failedAt: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z` }));
+            }
+
+            const failed = store.getFailedBuilds("dev", "us-east-1");
+            assert.equal(failed.length, 10);
+            // Oldest entries (build-0, build-1) should have been trimmed.
+            assert.ok(!failed.some((entry) => entry.id === "build-0"));
+            assert.ok(failed.some((entry) => entry.id === "build-11"));
+        });
+
+        it("removeFailedBuild removes a single entry by ID", () => {
+            const store = createAppStore();
+            store.addFailedBuild(makeFailedEntry());
+            store.removeFailedBuild("build-1");
+
+            assert.equal(store.getFailedBuilds("dev", "us-east-1").length, 0);
+        });
+
+        it("clearFailedBuildsForProject only clears matching project/scope", () => {
+            const store = createAppStore();
+            store.addFailedBuild(makeFailedEntry({ id: "build-1", projectName: "demo" }));
+            store.addFailedBuild(makeFailedEntry({ id: "build-2", projectName: "other" }));
+
+            store.clearFailedBuildsForProject("demo", "dev", "us-east-1");
+
+            const failed = store.getFailedBuilds("dev", "us-east-1");
+            assert.equal(failed.length, 1);
+            assert.equal(failed[0].projectName, "other");
+        });
+
+        it("clearFailedBuilds clears every entry in a scope", () => {
+            const store = createAppStore();
+            store.addFailedBuild(makeFailedEntry({ id: "build-1", projectName: "demo" }));
+            store.addFailedBuild(makeFailedEntry({ id: "build-2", projectName: "other" }));
+
+            store.clearFailedBuilds("dev", "us-east-1");
+
+            assert.equal(store.getFailedBuilds("dev", "us-east-1").length, 0);
+        });
+
+        it("setFailedBuilds restores a persisted list without duplicating onDidRefresh when unchanged", () => {
+            const store = createAppStore();
+            let refreshCount = 0;
+            store.onDidRefresh(() => { refreshCount += 1; });
+
+            store.setFailedBuilds([makeFailedEntry()]);
+            assert.equal(refreshCount, 1);
+            assert.equal(store.getFailedBuilds("dev", "us-east-1").length, 1);
+
+            store.setFailedBuilds([makeFailedEntry()]);
+            assert.equal(refreshCount, 1, "re-setting an identical list should not fire another refresh");
+        });
+    });
 });
+

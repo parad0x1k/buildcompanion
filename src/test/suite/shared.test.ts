@@ -180,6 +180,21 @@ describe("commands/shared", () => {
             const filtered = filterProjectsBySearch(projects, "  ");
             assert.deepEqual(filtered.map((project) => project.name), ["web-app", "Web-Admin", "worker"].sort((a, b) => a.localeCompare(b)));
         });
+
+        it("filterProjectsBySearch matches any comma-separated term (OR, contains)", () => {
+            const multiProjects = [{ name: "be-api" }, { name: "fe-app" }, { name: "middleware-core" }, { name: "unrelated" }];
+            const filtered = filterProjectsBySearch(multiProjects, "api,fe,middleware");
+            assert.deepEqual(
+                filtered.map((project) => project.name).sort((a, b) => a.localeCompare(b)),
+                ["be-api", "fe-app", "middleware-core"].sort((a, b) => a.localeCompare(b))
+            );
+        });
+
+        it("filterProjectsBySearch ignores blank segments and duplicate terms without duplicating matches", () => {
+            const multiProjects = [{ name: "be-api" }, { name: "fe-app" }];
+            const filtered = filterProjectsBySearch(multiProjects, "api,, api ,API");
+            assert.deepEqual(filtered.map((project) => project.name), ["be-api"]);
+        });
     });
 
     describe("canSelectAllVisibleProjects", () => {

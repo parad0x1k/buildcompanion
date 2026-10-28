@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
-import type { AppStore, BuildHistoryEntry, BuildState, BuildTimeDisplayFormat, Project } from "../state/store";
+import { filterProjectsBySearch } from "../state/store";
+import type { AppStore, BuildHistoryEntry, BuildState, BuildTimeDisplayFormat, FailedBuildEntry, Project } from "../state/store";
 import { logError, sanitizeLogValue } from "../logging/outputChannelManager";
 import { formatBuildStatusLabel } from "./statusLabels";
 import { formatBuildTimestamp } from "./timeFormatting";
@@ -13,6 +14,7 @@ type RootNodeKind =
     | "timeDisplayToggle"
     | "projectsSection"
     | "buildHistorySection"
+    | "failedBuildsSection"
     | "activeBuildsSection";
 
 export type TreeNode =
@@ -21,6 +23,7 @@ export type TreeNode =
     | { kind: "projectHistoryGroup"; project: Project }
     | { kind: "historyBuild"; build: BuildHistoryEntry }
     | { kind: "activeBuild"; build: BuildState }
+    | { kind: "failedBuild"; build: FailedBuildEntry }
     | { kind: "message"; label: string; description?: string; icon?: vscode.ThemeIcon; command?: vscode.Command };
 
 export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNode>, vscode.Disposable {
@@ -31,6 +34,7 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
     private readonly loadingHistoryKeys = new Set<string>();
     private lastCanSelectMultipleProjects: boolean | undefined;
     private lastHasSavedBranches: boolean | undefined;
+    private lastHasFailedBuilds: boolean | undefined;
     private disposed = false;
     private projectVisibilityCache:
         | {
@@ -64,13 +68,6 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
         this.onDidChangeTreeDataEmitter.fire();
     }
 
-    private filterProjects(projects: Project[], filterText: string): Project[] {
-        const filter = filterText.toLowerCase();
-        return projects
-            .filter((project) => !filter || project.name.toLowerCase().includes(filter))
-            .sort((a, b) => a.name.localeCompare(b.name));
-    }
-
     private getProjectVisibility(state: ReturnType<AppStore["getState"]>): {
         visibleProjects: Project[];
         canSelectVisibleProjects: boolean;
@@ -83,10 +80,12 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
             return cached;
         }
 
-        const visibleProjects = this.filterProjects(state.projects, filterText);
+        const visibleProjects = filterProjectsBySearch(state.projects, filterText);
         const hasFilter = filterText.trim().length > 0;
         const canSelectVisibleProjects = visibleProjects.length > 0 && (!hasFilter || visibleProjects.length > 1);
-        const shouldShowProjectCheckboxes = !hasFilter || visibleProjects.length > 1;
+        // Always show checkboxes for whatever is currently visible, so narrowing a search down to
+        // one match (e.g. while building up a multi-term batch selection) doesn't hide its checkbox.
+        const shouldShowProjectCheckboxes = visibleProjects.length > 0;
 
         const nextCache = {
             snapshotRef: state,
@@ -123,6 +122,14 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
         if (this.lastHasSavedBranches !== hasSavedBranches) {
             this.lastHasSavedBranches = hasSavedBranches;
             void vscode.commands.executeCommand("setContext", "codebuild.hasSavedBranches", hasSavedBranches);
+        }
+
+        const hasFailedBuilds = state.currentProfile
+            ? this.store.getFailedBuilds(state.currentProfile, state.currentRegion).length > 0
+            : false;
+        if (this.lastHasFailedBuilds !== hasFailedBuilds) {
+            this.lastHasFailedBuilds = hasFailedBuilds;
+            void vscode.commands.executeCommand("setContext", "codebuild.hasFailedBuilds", hasFailedBuilds);
         }
     }
 
@@ -339,6 +346,21 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                 item.id = "codebuild.buildHistorySection";
                 return item;
             }
+            case "failedBuildsSection": {
+                const state = this.store.getState();
+                const item = new vscode.TreeItem("Failed Builds", vscode.TreeItemCollapsibleState.Expanded);
+                item.iconPath = new vscode.ThemeIcon("folder");
+                item.id = "codebuild.failedBuildsSection";
+
+                if (state.currentProfile) {
+                    const count = this.store.getFailedBuilds(state.currentProfile, state.currentRegion).length;
+                    if (count > 0) {
+                        item.description = `${count}`;
+                    }
+                }
+
+                return item;
+            }
             case "project": {
                 const state = this.store.getState();
                 const item = new vscode.TreeItem(element.project.name, vscode.TreeItemCollapsibleState.None);
@@ -450,6 +472,30 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                 item.id = `codebuild.activeBuild.${element.build.id}`;
                 return item;
             }
+            case "failedBuild": {
+                const state = this.store.getState();
+                const branch = element.build.sourceVersion?.trim() || "unknown";
+                const failedAtText = formatBuildTimestamp(element.build.failedAt, state.buildTimeDisplayFormat, this.getLocalTimeZoneOverride());
+                const statusLabel = formatBuildStatusLabel(element.build.status);
+                const item = new vscode.TreeItem(
+                    `${element.build.projectName} • ${branch}`,
+                    vscode.TreeItemCollapsibleState.None
+                );
+                item.description = failedAtText ? `${statusLabel} • ${failedAtText}` : statusLabel;
+                item.iconPath = this.getStatusIcon(element.build.status, "historyBuild");
+                item.tooltip = [
+                    `Project: ${element.build.projectName}`,
+                    `Profile: ${element.build.profile}`,
+                    `Region: ${element.build.region}`,
+                    `Branch: ${branch}`,
+                    `Status: ${statusLabel}`,
+                    `Build ID: ${element.build.id}`,
+                    failedAtText ? `Failed: ${failedAtText}` : "Failed time unavailable"
+                ].join("\n");
+                item.contextValue = "failedBuild";
+                item.id = `codebuild.failedBuild.${element.build.id}`;
+                return item;
+            }
             case "message": {
                 const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
                 item.description = element.description;
@@ -469,7 +515,8 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                 { kind: "settingsSection" },
                 { kind: "projectsSection" },
                 { kind: "activeBuildsSection" },
-                { kind: "buildHistorySection" }
+                { kind: "buildHistorySection" },
+                { kind: "failedBuildsSection" }
             ];
         }
 
@@ -591,6 +638,34 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
             return filteredProjects.map((project) => ({
                 kind: "projectHistoryGroup",
                 project
+            }));
+        }
+
+        if (element.kind === "failedBuildsSection") {
+            if (!state.currentProfile) {
+                return [
+                    {
+                        kind: "message",
+                        label: "Select an AWS profile",
+                        icon: new vscode.ThemeIcon("warning")
+                    }
+                ];
+            }
+
+            const failedBuilds = this.store.getFailedBuilds(state.currentProfile, state.currentRegion);
+            if (failedBuilds.length === 0) {
+                return [
+                    {
+                        kind: "message",
+                        label: "No failed builds",
+                        icon: new vscode.ThemeIcon("circle-slash")
+                    }
+                ];
+            }
+
+            return failedBuilds.map((build) => ({
+                kind: "failedBuild",
+                build
             }));
         }
 

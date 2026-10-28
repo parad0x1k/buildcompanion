@@ -184,6 +184,18 @@
         }
       },
       {
+        "command": "codebuild.dismissFailedBuild",
+        "title": "Dismiss Failed Build",
+        "category": "BuildCompanion",
+        "icon": "$(close)"
+      },
+      {
+        "command": "codebuild.clearFailedBuilds",
+        "title": "Clear Failed Builds",
+        "category": "BuildCompanion",
+        "icon": "$(trash)"
+      },
+      {
         "command": "codebuild.openTerminal",
         "title": "Open AWS Setup Terminal",
         "category": "BuildCompanion"
@@ -253,6 +265,21 @@
           "command": "codebuild.cancelBuild",
           "when": "view == codebuildView && viewItem == buildInProgress",
           "group": "inline"
+        },
+        {
+          "command": "codebuild.retryBuild",
+          "when": "view == codebuildView && viewItem == failedBuild",
+          "group": "inline@1"
+        },
+        {
+          "command": "codebuild.viewLogs",
+          "when": "view == codebuildView && viewItem == failedBuild",
+          "group": "inline@2"
+        },
+        {
+          "command": "codebuild.dismissFailedBuild",
+          "when": "view == codebuildView && viewItem == failedBuild",
+          "group": "inline@3"
         },
         {
           "command": "codebuild.triggerBuild",
@@ -330,6 +357,11 @@
           "command": "codebuild.clearAllBranches",
           "when": "view == codebuildView && codebuild.hasSavedBranches",
           "group": "navigation@8"
+        },
+        {
+          "command": "codebuild.clearFailedBuilds",
+          "when": "view == codebuildView && codebuild.hasFailedBuilds",
+          "group": "navigation@9"
         }
       ],
       "editor/title": [
@@ -377,6 +409,13 @@
           "minimum": 1,
           "maximum": 100,
           "description": "Maximum number of build history entries retained per project in the tree view."
+        },
+        "codebuild.batchDeploy.maxSelectedProjects": {
+          "type": "integer",
+          "default": 25,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Maximum number of projects that can be selected at once (via checkboxes or Select All Visible Projects) for a batch deployment. Attempting to select more is blocked with a warning."
         },
         "codebuild.localTimeZone": {
           "type": "string",

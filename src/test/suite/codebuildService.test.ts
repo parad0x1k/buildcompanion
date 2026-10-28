@@ -53,7 +53,7 @@ describe("aws/codebuildService", () => {
     describe("startCodeBuild", () => {
         it("maps a successful StartBuild response to BuildState", async () => {
             codeBuildMock.on(StartBuildCommand).resolves({
-                build: { id: "demo:123", projectName: "demo", buildStatus: "IN_PROGRESS" }
+                build: { id: "demo:123", projectName: "demo", buildStatus: "IN_PROGRESS", sourceVersion: "main" }
             });
 
             const build = await startCodeBuild("dev", "us-east-1", "demo", "main");
@@ -62,6 +62,7 @@ describe("aws/codebuildService", () => {
             assert.equal(build.status, "IN_PROGRESS");
             assert.equal(build.profile, "dev");
             assert.equal(build.region, "us-east-1");
+            assert.equal(build.sourceVersion, "main");
         });
 
         it("omits sourceVersion when no branch is provided", async () => {

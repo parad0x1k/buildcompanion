@@ -21,6 +21,7 @@ import { editProjectEnvironmentVariables } from "./projectEnvironmentVariables";
 import { startBuildWithOverrides } from "./startBuildWithOverrides";
 import { editProjectConfiguration } from "./editProjectConfiguration";
 import { persistBuildTimeDisplayFormat } from "../state/timeDisplayPreference";
+import { dismissFailedBuild, clearFailedBuilds } from "./failedBuilds";
 
 let sharedLogsOutputChannel: vscode.OutputChannel | undefined;
 
@@ -68,7 +69,8 @@ function openTerminal(): void {
 async function searchProjects(store: AppStore): Promise<void> {
     const query = await vscode.window.showInputBox({
         title: "Search CodeBuild Projects",
-        placeHolder: "Enter project name"
+        prompt: "Use commas to match any of several terms, e.g. api,fe,backend",
+        placeHolder: "Enter project name (comma-separated for multiple)"
     });
 
     store.setProjectFilter(query ?? "");
@@ -144,6 +146,8 @@ export function registerCodeBuildCommands({ context, store }: CommandDeps): void
         register("codebuild.deployAll", async () => deployAll(context, store)),
         register("codebuild.setBranch", async (arg?: unknown) => setBranch(store, arg)),
         register("codebuild.clearAllBranches", async () => clearAllSavedBranches(store)),
+        register("codebuild.dismissFailedBuild", async (arg?: unknown) => dismissFailedBuild(context, store, arg)),
+        register("codebuild.clearFailedBuilds", async () => clearFailedBuilds(context, store)),
         register("codebuild.openTerminal", () => openTerminal())
     ];
 

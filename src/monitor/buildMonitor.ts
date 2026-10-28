@@ -9,6 +9,8 @@ import { getUserFriendlyErrorMessage } from "../aws/errorHandling";
 import type { AppStore, BuildState, Project } from "../state/store";
 import { logError, logInfo, sanitizeLogValue } from "../logging/outputChannelManager";
 import { formatProjectScope, notify } from "../notifications/notifier";
+import { retryBuild } from "../commands/retryBuild";
+import { persistFailedBuilds } from "../state/failedBuildsPersistence";
 
 const DEFAULT_POLL_INTERVAL_MS = 3000;
 const MIN_POLL_INTERVAL_MS = 2000;
@@ -265,15 +267,26 @@ export class BuildMonitor implements vscode.Disposable {
         }
 
         this.notifiedBuildIds.add(build.id);
+        const branchLabel = formatBranchForNotification(build.sourceVersion);
+        const wasExtensionTriggered = this.store.isExtensionTriggeredBuild(build.id);
+        this.store.clearExtensionTriggeredBuild(build.id);
 
         if (build.status === "SUCCEEDED") {
-            const successMessage = `Deployment completed for ${formatProjectScope(build.projectName, build.profile, build.region)}`;
+            const successMessage = `Deployment completed for ${formatProjectScope(build.projectName, build.profile, build.region)} using ${branchLabel}`;
             void notify("success", successMessage);
+
+            // Only touch persisted state when this project actually had a failed entry to clear.
+            const hadFailedEntries = this.store.getFailedBuilds(build.profile, build.region)
+                .some((failed) => failed.projectName === build.projectName);
+            if (hadFailedEntries) {
+                this.store.clearFailedBuildsForProject(build.projectName, build.profile, build.region);
+                void persistFailedBuilds(this.context, this.store.getState().failedBuilds);
+            }
             return;
         }
 
         if (build.status === "STOPPED") {
-            const stoppedMessage = `Deployment stopped for ${formatProjectScope(build.projectName, build.profile, build.region)}`;
+            const stoppedMessage = `Deployment stopped for ${formatProjectScope(build.projectName, build.profile, build.region)} using ${branchLabel}`;
             logInfo(
                 `[BUILD] Deployment stopped for ${formatSanitizedProjectScope(build.projectName, build.profile, build.region)} (buildId: ${sanitizeLogValue(build.id, "buildId")}, status: ${build.status})`
             );
@@ -286,11 +299,39 @@ export class BuildMonitor implements vscode.Disposable {
             || build.status === "FAULT"
             || build.status === "TIMED_OUT"
         ) {
-            const failureMessage = `Deployment failed for ${formatProjectScope(build.projectName, build.profile, build.region)}`;
+            const failureMessage = `Deployment failed for ${formatProjectScope(build.projectName, build.profile, build.region)} using ${branchLabel}`;
             logError(
                 `[BUILD] Deployment failed for ${formatSanitizedProjectScope(build.projectName, build.profile, build.region)} (buildId: ${sanitizeLogValue(build.id, "buildId")}, status: ${build.status})`
             );
-            void notify("error", failureMessage);
+
+            if (wasExtensionTriggered) {
+                this.store.addFailedBuild({
+                    id: build.id,
+                    projectName: build.projectName,
+                    status: build.status,
+                    profile: build.profile,
+                    region: build.region,
+                    sourceVersion: build.sourceVersion,
+                    failedAt: new Date().toISOString()
+                });
+                void persistFailedBuilds(this.context, this.store.getState().failedBuilds);
+            }
+
+            // Lets the user restart the build directly from the notification, without opening Build History.
+            void notify("error", failureMessage, { actions: ["Retry Build"] }).then((selection) => {
+                if (selection !== "Retry Build") {
+                    return;
+                }
+
+                void retryBuild(this.context, this.store, {
+                    id: build.id,
+                    projectName: build.projectName,
+                    status: build.status,
+                    profile: build.profile,
+                    region: build.region,
+                    sourceVersion: build.sourceVersion
+                });
+            });
         }
     }
 
@@ -350,11 +391,12 @@ export class BuildMonitor implements vscode.Disposable {
             );
 
             this.store.removePendingBuild(pending.projectName, pending.profile, pending.region);
+            this.store.markBuildAsExtensionTriggered(startedBuild.id);
 
             const branchLabel = formatBranchForNotification(pending.branch);
             void notify("info", `Deployment triggered for ${formatProjectScope(pending.projectName, pending.profile, pending.region)} using ${branchLabel}`);
 
-            void notify("success", `Build started for ${formatProjectScope(pending.projectName, pending.profile, pending.region)}`, {
+            void notify("success", `Build started for ${formatProjectScope(pending.projectName, pending.profile, pending.region)} using ${branchLabel}`, {
                 target: "status",
                 timeoutMs: 3000
             });
