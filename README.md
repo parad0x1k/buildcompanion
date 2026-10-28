@@ -91,7 +91,7 @@ If a permission is missing, the failed action shows a short notification and log
 - Profile discovery across local, SSO, environment, and temporary credentials.
 - Region switching with persisted selection.
 - CodeBuild project listing, trigger, status monitoring, cancel, and history.
-- Retry a past build from Build History using its original source version and project configuration.
+- Retry a past build from Build History, or directly from a build-failure notification, using its original source version and project configuration.
 - Build concurrency prompts (Wait, Trigger anyway, Cancel) with queue handling.
 - Batch deployment for selected projects with per-project branch memory and fallback branch.
 - Dedicated, scrollable per-build log viewer (its own editor tab) with throttled updates and a line-retention cap, so very large log streams stay responsive.
@@ -102,7 +102,8 @@ If a permission is missing, the failed action shows a short notification and log
 - View and edit a project's CodeBuild environment variables from a settings (gear) icon.
 - CloudWatch log streaming with recoverable retry/backoff behavior.
 - Failure summary extraction from recent log lines.
-- Search and filtering of projects in TreeView.
+- Search and filtering of projects in TreeView (comma-separated terms match any, e.g. `api,fe,middleware`).
+- Failed Builds section tracking builds you triggered via BuildCompanion that ended in failure, with one-click retry.
 - Scope-aware state for profile, region, branches, selections, queued items, and destructive-action blocks.
 - Output channel logging with identifier redaction by default and configurable retention.
 - Permission-denied failures name the specific missing IAM action where applicable.
@@ -116,7 +117,7 @@ All contributed commands are available through the Command Palette. Several are 
 | `codebuild.switchProfile` | Switch Profile | Settings row, Command Palette | Change active AWS profile |
 | `codebuild.switchRegion` | Switch Region | Settings row, Command Palette | Change active AWS region |
 | `codebuild.refresh` | Refresh | Toolbar, context menu, Command Palette | Reload profiles and projects |
-| `codebuild.searchProjects` | Search Projects | Toolbar, Command Palette | Filter project list |
+| `codebuild.searchProjects` | Search Projects | Toolbar, Command Palette | Filter project list (comma-separated terms match any) |
 | `codebuild.clearProjectSearch` | Clear Project Search | Toolbar, Command Palette | Clear filter text |
 | `codebuild.toggleAutoRefresh` | Toggle Auto-Refresh | Settings row, toolbar, Command Palette | Enable or disable build polling |
 | `codebuild.toggleBuildTimeDisplay` | Toggle Build Time Display (Local/UTC) | Settings row, Command Palette | Switch Build History timestamps between local time and UTC |
@@ -187,11 +188,13 @@ Supported regions are fixed in this version. See [FEATURE_REFERENCE.md](FEATURE_
 
 ### Deploy Selected Projects (Batch)
 
-1. Select projects from the Projects section.
+1. Select projects from the Projects section. Checkboxes stay visible even as you narrow a search down to one match, so you can build up a selection across several searches.
 2. Run Deploy Selected Projects.
 3. Provide delay in seconds (`>= 1`).
 4. If some projects do not have saved branches, optionally provide a fallback branch.
 5. Confirm deployment preview and start.
+
+Selecting more than `codebuild.batchDeploy.maxSelectedProjects` (default `25`) projects at once, whether by checkbox or Select All, is blocked with a warning instead of silently truncating the selection.
 
 ### View Logs and Failure Summary
 
@@ -216,6 +219,8 @@ Supported regions are fixed in this version. See [FEATURE_REFERENCE.md](FEATURE_
 3. Confirm the prompt, which names the branch/source version being retried when known. A new build starts using the original build's source version and the project's current configuration.
 4. A notification confirms the branch/source version the retry actually used, resolved from the `RetryBuild` response (shown as `default` when the project's default source version was used).
 5. If a build is already in progress for that project, you are asked to confirm before starting a second, concurrent build.
+6. A failed build's completion notification also offers a `Retry Build` button that starts this same flow immediately, without needing to find the build in Build History.
+7. Builds that failed are also listed in the **Failed Builds** section (below Build History) — but only ones that BuildCompanion itself started (Trigger Build, Retry Build, batch Deploy, or an auto-started queued build); builds already running before the extension started watching them won't appear there. Each row has `Retry Build`, `View Logs`, and `Dismiss Failed Build` actions, a `Clear Failed Builds` toolbar button clears the list, and an entry disappears automatically once that project's next build succeeds. The list is capped at the 10 most recent per profile/region and persists across restarts.
 
 ### Edit Project Environment Variables
 
@@ -237,7 +242,9 @@ Supported regions are fixed in this version. See [FEATURE_REFERENCE.md](FEATURE_
 
 - Active build polling is enabled by default.
 - Adaptive polling can automatically increase poll interval when many builds are active.
-- Completion notifications are shown for success, failure, timeout, fault, and stopped states.
+- Completion notifications are shown for success, failure, timeout, fault, and stopped states, and name the branch/source version that was built.
+- Failure notifications include a `Retry Build` button to immediately restart the same build without leaving the notification.
+- Failed builds that BuildCompanion itself triggered are also tracked in the Failed Builds section until dismissed, cleared, or superseded by a successful build for that project.
 - If auto-refresh is disabled, completion popups and queued Wait progression are paused.
 - Stale in-progress builds (long-running) raise warning notifications.
 
@@ -252,6 +259,7 @@ Supported regions are fixed in this version. See [FEATURE_REFERENCE.md](FEATURE_
 | `codebuild.logging.verbose` | `false` | Disable identifier redaction in output logs |
 | `codebuild.logsViewer.maxLines` | `10000` | Maximum lines retained in the per-build log viewer before older lines are truncated (minimum `500`) |
 | `codebuild.logsViewer.maxFullLogLines` | `50000` | Safety cap on total lines fetched by `View Full Log` (minimum `1000`) |
+| `codebuild.batchDeploy.maxSelectedProjects` | `25` | Maximum projects selectable at once (checkboxes or Select All) for a batch deployment (`1` to `100`) |
 | `codebuild.localTimeZone` | `""` (auto-detect) | IANA time zone (e.g. `America/New_York`) used for the "Local" build time display; see [Troubleshooting](#local-build-times-dont-change-in-a-dev-containerwslssh-remote) |
 
 ## Security Notes

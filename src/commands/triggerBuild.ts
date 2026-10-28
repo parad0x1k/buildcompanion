@@ -140,7 +140,7 @@ export async function triggerBuild(
             return;
         }
 
-        showShortStatusMessage(`Build trigger started for ${formatProjectScope(projectName, profile, state.currentRegion)}`);
+        showShortStatusMessage(`Build trigger started for ${formatProjectScope(projectName, profile, state.currentRegion)} using ${formatBranchForNotification(branch)}`);
 
         const build = await startCodeBuild(profile, state.currentRegion, projectName, branch || undefined, {
             secretStorage: context.secrets
@@ -157,9 +157,10 @@ export async function triggerBuild(
         store.batchUpdate(() => {
             store.setActiveBuilds(nextActiveBuilds);
             store.setProjects(setProjectStatus(latestState.projects, projectName, build.status));
+            store.markBuildAsExtensionTriggered(build.id);
         });
 
-        showShortStatusMessage(`Build started for ${formatProjectScope(projectName, profile, state.currentRegion)}`);
+        showShortStatusMessage(`Build started for ${formatProjectScope(projectName, profile, state.currentRegion)} using ${formatBranchForNotification(branch)}`);
         warnCompletionPopupsPaused(state);
     } catch (error) {
         const message = getUserFriendlyErrorMessage(error, {

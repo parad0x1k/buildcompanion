@@ -132,6 +132,7 @@ Top-level sections:
 - Projects
 - Active Builds
 - Build History
+- Failed Builds
 
 ### Settings Section
 
@@ -150,11 +151,17 @@ Rows:
 - Shows `Open Terminal` setup action (`codebuild.openTerminal`) when no profiles exist.
 - Displays `No CodeBuild projects found` when project list is empty.
 
+Search behavior (`codebuild.searchProjects`):
+
+- Accepts comma-separated terms (e.g. `api,fe,middleware`); a project matches if its name contains any one term (case-insensitive, OR semantics).
+- Blank segments (e.g. a trailing comma) and duplicate terms are ignored; matching projects are never duplicated in results.
+
 Checkbox behavior:
 
-- Project checkboxes are shown when there is no filter, or filter result count is greater than 1.
-- Project checkboxes are hidden when filtered list has exactly one project.
+- Project checkboxes are shown for every currently visible project row, regardless of filter or result count, so narrowing a search down to a single match still allows selecting it into a batch.
+- `Select All Visible Projects` remains available only when there is no filter, or the filter matches more than one project.
 - Selection state is scoped by profile + region + project name.
+- Selecting a project (via checkbox or Select All) beyond `codebuild.batchDeploy.maxSelectedProjects` is blocked with a warning notification; a rejected checkbox reverts to unchecked.
 
 ### Active Builds Section
 
@@ -173,6 +180,15 @@ Checkbox behavior:
 - Status shown in the tooltip is a human-readable label (e.g. `Succeeded`, `Timed Out`) via `formatBuildStatusLabel`.
 - The completion time shown in the row description and tooltip (`Completed:`/`Failed:`/`Stopped:`/`Updated:`) honors the Local/UTC toggle and always includes an explicit timezone abbreviation (e.g. `IST`, `UTC`) so it's unambiguous which one is displayed.
 - Completed and historical build rows also expose a `View Full Log` inline action (`codebuild.viewFullLogs`) alongside `Retry Build` and `View Logs`.
+
+### Failed Builds Section
+
+- Shows builds that BuildCompanion itself started (Trigger Build, Retry Build, batch Deploy, or an auto-started queued "Wait" build) and that ended in `FAILED`, `FAULT`, or `TIMED_OUT`.
+- Builds already in progress before BuildCompanion started watching them (a previous VS Code session, the AWS Console, CI/CD, webhooks) are never attributed to the extension and will not appear here, since AWS has no "started via BuildCompanion" flag to query.
+- Capped at the 10 most recent entries per profile + region scope (oldest trimmed first); persisted across VS Code restarts (`globalState`).
+- An entry is automatically removed once that project's next build succeeds, regardless of how that later build was triggered.
+- Each row exposes `Retry Build`, `View Logs`, and `Dismiss Failed Build` inline actions. A `Clear Failed Builds` toolbar button (shown only when the current scope has entries) clears the whole scoped list.
+- Row label format: `<projectName> • <branch>`; description shows status and failure time (honoring the Local/UTC toggle).
 
 ## Authentication and Credential Handling
 
@@ -246,6 +262,7 @@ Default region resolution order:
 - Retry build (`RetryBuild`) reusing an existing build's resolved source version and the project's current configuration
   - The confirmation prompt shows the branch/source version being retried when the originating row (e.g. a Build History entry) carries it; otherwise it falls back to a generic description.
   - The resolved source version from the `RetryBuild` response (normalized to `default` when none is set) is always shown in the post-retry notification, regardless of whether it was known beforehand.
+  - A failed build's completion notification includes a `Retry Build` action button that invokes this exact same confirm-and-retry flow directly, without needing to open Build History.
 - Stop build (`StopBuild`)
 - Get one build status (`BatchGetBuilds`)
 - Get many build statuses in chunks of up to 100 IDs
@@ -325,6 +342,8 @@ Completion status handling:
 - `STOPPED`: warning notification
 - `FAILED`, `FAULT`, `TIMED_OUT`: error notification with sound
 
+All completion notifications include the branch/source version that was built (`using <branch>`, or `using default source version` when none was set). Failure notifications (`FAILED`, `FAULT`, `TIMED_OUT`) additionally include a `Retry Build` action button that re-runs the same confirm-and-retry flow as the Build History `Retry Build` inline action, without leaving the notification. When the failed build was started by BuildCompanion itself, it is also added to the Failed Builds section (see TreeView Structure above).
+
 ### Stale Build Warning
 
 - Warning is emitted when an in-progress build exceeds 2 hours since `startTime`.
@@ -356,7 +375,7 @@ Batch mode (`codebuild.deployAll`) operates on selected projects in current scop
 
 ### Guardrails and Limits
 
-- Maximum selected projects per batch: 25
+- Maximum selected projects per batch: configurable via `codebuild.batchDeploy.maxSelectedProjects` (default 25, absolute ceiling 100); enforced both when selecting projects (checkboxes/Select All) and when starting the deployment
 - Minimum delay between triggers: 1000 ms
 - Maximum delay between triggers: 60000 ms
 - Cancellation check interval while waiting: 250 ms
@@ -555,6 +574,7 @@ No-profile message:
 | `codebuild.logging.verbose` | boolean | `false` | n/a | Redaction toggle for identifiers |
 | `codebuild.logsViewer.maxLines` | integer | `10000` | `>=500` | Per-build log viewer line-retention cap before truncation |
 | `codebuild.logsViewer.maxFullLogLines` | integer | `50000` | `>=1000` | Safety cap on total lines fetched by "View Full Log" |
+| `codebuild.batchDeploy.maxSelectedProjects` | integer | `25` | `1..100` | Maximum projects selectable at once for a batch deployment |
 | `codebuild.localTimeZone` | string | `""` | valid IANA zone or empty | Overrides auto-detected system timezone used for the "Local" build time display; falls back to auto-detect on empty/invalid value |
 
 ## Environment Variable Reference
@@ -573,7 +593,9 @@ No-profile message:
 
 | Area | Constant | Value |
 | --- | --- | --- |
-| Batch deploy | max selected projects | 25 |
+| Batch deploy | max selected projects (default, configurable) | 25 |
+| Batch deploy | max selected projects (absolute ceiling) | 100 |
+| Failed Builds | max retained entries per profile+region scope | 10 |
 | Batch deploy | min delay | 1000 ms |
 | Batch deploy | max delay | 60000 ms |
 | Batch deploy | cancellation check interval | 250 ms |

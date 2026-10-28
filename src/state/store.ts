@@ -12,6 +12,39 @@ export interface Project {
     lastBuildStatus?: string;
 }
 
+// Comma-separated terms are OR'd together (match any); blank/duplicate terms are ignored.
+export function parseProjectSearchTerms(filterText: string): string[] {
+    const terms: string[] = [];
+    const seen = new Set<string>();
+
+    for (const rawTerm of filterText.split(",")) {
+        const term = rawTerm.trim().toLowerCase();
+        if (!term || seen.has(term)) {
+            continue;
+        }
+
+        seen.add(term);
+        terms.push(term);
+    }
+
+    return terms;
+}
+
+export function filterProjectsBySearch(projects: Project[], filterText: string): Project[] {
+    const terms = parseProjectSearchTerms(filterText);
+
+    return projects
+        .filter((project) => {
+            if (terms.length === 0) {
+                return true;
+            }
+
+            const normalizedName = project.name.toLowerCase();
+            return terms.some((term) => normalizedName.includes(term));
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export type BuildStatus = "IN_PROGRESS" | "SUCCEEDED" | "FAILED" | "STOPPED" | "FAULT" | "TIMED_OUT";
 
 /** Display preference for build timestamps shown in the tree view: the detected local timezone, or UTC. */
@@ -24,6 +57,8 @@ export interface BuildState {
     profile: string;
     region: string;
     startTime?: string;
+    /** Raw AWS source version (branch/commit/tag) used for this build, when known. */
+    sourceVersion?: string;
 }
 
 export interface BuildHistoryEntry {
@@ -47,6 +82,17 @@ export interface PendingBuild {
     cancellationFenceToken: number;
 }
 
+/** A terminal (FAILED/FAULT/TIMED_OUT) build that BuildCompanion itself started, surfaced in the Failed Builds section. */
+export interface FailedBuildEntry {
+    id: string;
+    projectName: string;
+    status: BuildStatus;
+    profile: string;
+    region: string;
+    sourceVersion?: string;
+    failedAt: string;
+}
+
 export interface AppState {
     currentProfile: string | null;
     currentRegion: string;
@@ -62,11 +108,13 @@ export interface AppState {
     projectBranches: Record<string, string>;
     selectedProjects: Record<string, boolean>;
     pendingBuilds: PendingBuild[];
+    failedBuilds: FailedBuildEntry[];
     destructiveActionBlocks: Record<string, string>;
     scopeCancellationFences: Record<string, number>;
 }
 
 const DEFAULT_MAX_HISTORY_ENTRIES_PER_PROJECT = 20;
+const MAX_FAILED_BUILDS_PER_SCOPE = 10;
 
 function areStatesEqual(left: AppState, right: AppState): boolean {
     return deepEqual(left, right);
@@ -140,6 +188,10 @@ export class AppStore {
     private readonly onDidRefreshEmitter = new vscode.EventEmitter<void>();
     private batchDepth = 0;
     private hasPendingRefresh = false;
+    // Side-channel registry (not rendered, so intentionally outside AppState/refresh) tracking
+    // build IDs BuildCompanion itself started, so completion handling can tell those apart from
+    // builds merely discovered via startup/profile-switch reconciliation.
+    private readonly extensionTriggeredBuildIds = new Set<string>();
     public readonly onDidRefresh = this.onDidRefreshEmitter.event;
 
     constructor(initialState?: Partial<AppState>) {
@@ -158,6 +210,7 @@ export class AppStore {
             projectBranches: {},
             selectedProjects: {},
             pendingBuilds: [],
+            failedBuilds: [],
             destructiveActionBlocks: {},
             scopeCancellationFences: {},
             ...initialState
@@ -183,6 +236,7 @@ export class AppStore {
             projectBranches: { ...this.state.projectBranches },
             selectedProjects: { ...this.state.selectedProjects },
             pendingBuilds: [...this.state.pendingBuilds],
+            failedBuilds: [...this.state.failedBuilds],
             destructiveActionBlocks: { ...this.state.destructiveActionBlocks },
             scopeCancellationFences: { ...this.state.scopeCancellationFences }
         };
@@ -612,6 +666,79 @@ export class AppStore {
         }
 
         this.state.pendingBuilds = nextPendingBuilds;
+        this.refresh();
+    }
+
+    public markBuildAsExtensionTriggered(buildId: string): void {
+        this.extensionTriggeredBuildIds.add(buildId);
+    }
+
+    public isExtensionTriggeredBuild(buildId: string): boolean {
+        return this.extensionTriggeredBuildIds.has(buildId);
+    }
+
+    public clearExtensionTriggeredBuild(buildId: string): void {
+        this.extensionTriggeredBuildIds.delete(buildId);
+    }
+
+    public setFailedBuilds(failedBuilds: FailedBuildEntry[]): void {
+        if (deepEqual(this.state.failedBuilds, failedBuilds)) {
+            return;
+        }
+
+        this.state.failedBuilds = [...failedBuilds];
+        this.refresh();
+    }
+
+    public getFailedBuilds(profile: string, region: string): FailedBuildEntry[] {
+        return this.state.failedBuilds
+            .filter((failed) => failed.profile === profile && failed.region === region)
+            .sort((a, b) => b.failedAt.localeCompare(a.failedAt));
+    }
+
+    public addFailedBuild(entry: FailedBuildEntry): void {
+        const sameScope = this.state.failedBuilds.filter((failed) => (
+            failed.profile === entry.profile && failed.region === entry.region && failed.id !== entry.id
+        ));
+        const otherScopes = this.state.failedBuilds.filter((failed) => (
+            failed.profile !== entry.profile || failed.region !== entry.region
+        ));
+
+        const nextSameScope = [entry, ...sameScope].slice(0, MAX_FAILED_BUILDS_PER_SCOPE);
+        this.state.failedBuilds = [...otherScopes, ...nextSameScope];
+        this.refresh();
+    }
+
+    public removeFailedBuild(buildId: string): void {
+        const next = this.state.failedBuilds.filter((failed) => failed.id !== buildId);
+        if (next.length === this.state.failedBuilds.length) {
+            return;
+        }
+
+        this.state.failedBuilds = next;
+        this.refresh();
+    }
+
+    public clearFailedBuildsForProject(projectName: string, profile: string, region: string): void {
+        const next = this.state.failedBuilds.filter((failed) => !(
+            failed.projectName === projectName && failed.profile === profile && failed.region === region
+        ));
+
+        if (next.length === this.state.failedBuilds.length) {
+            return;
+        }
+
+        this.state.failedBuilds = next;
+        this.refresh();
+    }
+
+    public clearFailedBuilds(profile: string, region: string): void {
+        const next = this.state.failedBuilds.filter((failed) => !(failed.profile === profile && failed.region === region));
+        if (next.length === this.state.failedBuilds.length) {
+            return;
+        }
+
+        this.state.failedBuilds = next;
         this.refresh();
     }
 

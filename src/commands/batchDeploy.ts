@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import {
-    MAX_BATCH_SELECTED_PROJECTS,
+    getConfiguredMaxBatchSelectedProjects,
     MIN_BATCH_DELAY_MS,
     triggerBuildBatch,
     type BatchTriggerProject
@@ -85,12 +85,13 @@ export async function deployAll(
     }
 
     const projectCount = projectNames.length;
-    if (projectCount > MAX_BATCH_SELECTED_PROJECTS) {
+    const maxSelectedProjects = getConfiguredMaxBatchSelectedProjects();
+    if (projectCount > maxSelectedProjects) {
         void notify(
             "error",
-            `Selected deployment exceeds the maximum of ${MAX_BATCH_SELECTED_PROJECTS} projects in ${formatScope(profile, region)}.`,
+            `Selected deployment exceeds the maximum of ${maxSelectedProjects} projects in ${formatScope(profile, region)}.`,
             {
-                detail: `Reduce your selection from ${projectCount} projects before starting a batch deployment.`
+                detail: `Reduce your selection from ${projectCount} projects, or raise the codebuild.batchDeploy.maxSelectedProjects setting, before starting a batch deployment.`
             }
         );
         return;
@@ -206,6 +207,7 @@ export async function deployAll(
                     store.setActiveBuilds(nextActiveBuilds);
                     store.setProjects(setProjectStatus(latestState.projects, projectName, build.status));
                     store.removePendingBuild(projectName, profile, region);
+                    store.markBuildAsExtensionTriggered(build.id);
                 });
             }
         },
@@ -299,6 +301,23 @@ export async function selectAllProjects(store: AppStore): Promise<void> {
     const visibleProjects = getVisibleProjects(store);
     if (visibleProjects.length === 0) {
         void notify("info", `No CodeBuild projects found in ${formatScope(profile, state.currentRegion)}`);
+        return;
+    }
+
+    const maxSelectedProjects = getConfiguredMaxBatchSelectedProjects();
+    const projectedNames = new Set([
+        ...getSelectedProjectNames(store, profile, state.currentRegion),
+        ...visibleProjects.map((project) => project.name)
+    ]);
+
+    if (projectedNames.size > maxSelectedProjects) {
+        void notify(
+            "warning",
+            `Select All would select ${projectedNames.size} project(s), exceeding the maximum of ${maxSelectedProjects} for a batch deployment in ${formatScope(profile, state.currentRegion)}.`,
+            {
+                detail: "Narrow your search, deselect some projects first, or raise the codebuild.batchDeploy.maxSelectedProjects setting."
+            }
+        );
         return;
     }
 

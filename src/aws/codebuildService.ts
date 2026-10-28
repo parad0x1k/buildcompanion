@@ -89,7 +89,8 @@ function toBuildState(build: Build, profile: string, region: string): BuildState
         status: normalizeBuildStatus(build.buildStatus),
         profile,
         region,
-        startTime: build.startTime?.toISOString()
+        startTime: build.startTime?.toISOString(),
+        sourceVersion: build.sourceVersion
     };
 }
 

@@ -1,6 +1,12 @@
 import * as assert from "node:assert/strict";
+import * as vscode from "vscode";
 import { StartBuildCommand } from "@aws-sdk/client-codebuild";
-import { MAX_BATCH_SELECTED_PROJECTS, MIN_BATCH_DELAY_MS, triggerBuildBatch } from "../../aws/batchTriggerManager";
+import {
+    getConfiguredMaxBatchSelectedProjects,
+    MAX_BATCH_SELECTED_PROJECTS,
+    MIN_BATCH_DELAY_MS,
+    triggerBuildBatch
+} from "../../aws/batchTriggerManager";
 import { codeBuildMock } from "../awsMocks";
 
 describe("aws/batchTriggerManager", () => {
@@ -97,5 +103,49 @@ describe("aws/batchTriggerManager", () => {
 
         assert.deepEqual(result, { successfulBuilds: [], failedProjects: [], cancelled: false });
         assert.equal(codeBuildMock.commandCalls(StartBuildCommand).length, 0);
+    });
+
+    describe("getConfiguredMaxBatchSelectedProjects", () => {
+        afterEach(async () => {
+            await vscode.workspace.getConfiguration("codebuild").update(
+                "batchDeploy.maxSelectedProjects",
+                undefined,
+                vscode.ConfigurationTarget.Global
+            );
+        });
+
+        it("defaults to 25 when unset", () => {
+            assert.equal(getConfiguredMaxBatchSelectedProjects(), 25);
+        });
+
+        it("honors a valid configured value", async () => {
+            await vscode.workspace.getConfiguration("codebuild").update(
+                "batchDeploy.maxSelectedProjects",
+                40,
+                vscode.ConfigurationTarget.Global
+            );
+
+            assert.equal(getConfiguredMaxBatchSelectedProjects(), 40);
+        });
+
+        it("clamps to the absolute ceiling", async () => {
+            await vscode.workspace.getConfiguration("codebuild").update(
+                "batchDeploy.maxSelectedProjects",
+                MAX_BATCH_SELECTED_PROJECTS + 500,
+                vscode.ConfigurationTarget.Global
+            );
+
+            assert.equal(getConfiguredMaxBatchSelectedProjects(), MAX_BATCH_SELECTED_PROJECTS);
+        });
+
+        it("clamps values below 1 up to 1", async () => {
+            await vscode.workspace.getConfiguration("codebuild").update(
+                "batchDeploy.maxSelectedProjects",
+                0,
+                vscode.ConfigurationTarget.Global
+            );
+
+            assert.equal(getConfiguredMaxBatchSelectedProjects(), 1);
+        });
     });
 });

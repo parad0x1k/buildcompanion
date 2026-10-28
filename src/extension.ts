@@ -1,11 +1,13 @@
 import * as vscode from "vscode";
 import { createAppStore } from "./state/store";
 import { getPersistedBuildTimeDisplayFormat } from "./state/timeDisplayPreference";
+import { getPersistedFailedBuilds } from "./state/failedBuildsPersistence";
 import { CodeBuildTreeDataProvider, type TreeNode } from "./ui/treeDataProvider";
 import { initializeCommandState, loadBuildHistoryForProject, registerCodeBuildCommands } from "./commands";
 import { BuildMonitor } from "./monitor/buildMonitor";
 import { disposeLogsStreaming } from "./aws/logsService";
 import { clearAwsClientCache } from "./aws/clientFactory";
+import { getConfiguredMaxBatchSelectedProjects } from "./aws/batchTriggerManager";
 import { logInfo, disposeOutputChannel } from "./logging/outputChannelManager";
 import { formatScope, notify } from "./notifications/notifier";
 import { registerBuildLogsDocumentProvider } from "./ui/buildLogsViewer";
@@ -16,7 +18,8 @@ export async function activate(context: vscode.ExtensionContext) {
     logInfo("BuildCompanion activated");
 
     const store = createAppStore({
-        buildTimeDisplayFormat: getPersistedBuildTimeDisplayFormat(context)
+        buildTimeDisplayFormat: getPersistedBuildTimeDisplayFormat(context),
+        failedBuilds: getPersistedFailedBuilds(context)
     });
     context.subscriptions.push(store);
 
@@ -48,16 +51,39 @@ export async function activate(context: vscode.ExtensionContext) {
             return;
         }
 
+        const maxSelectedProjects = getConfiguredMaxBatchSelectedProjects();
+        let selectedCount = store.getSelectedProjects(profile, state.currentRegion).length;
+        let rejectedCount = 0;
+
         for (const [element, checkboxState] of event.items) {
             if (element.kind !== "project") {
                 continue;
             }
 
-            store.setProjectSelected(
-                element.project.name,
-                profile,
-                state.currentRegion,
-                checkboxState === vscode.TreeItemCheckboxState.Checked
+            const wantsSelected = checkboxState === vscode.TreeItemCheckboxState.Checked;
+            const wasSelected = store.isProjectSelected(element.project.name, profile, state.currentRegion);
+
+            if (wantsSelected && !wasSelected && selectedCount >= maxSelectedProjects) {
+                rejectedCount += 1;
+                continue;
+            }
+
+            store.setProjectSelected(element.project.name, profile, state.currentRegion, wantsSelected);
+            if (wantsSelected !== wasSelected) {
+                selectedCount += wantsSelected ? 1 : -1;
+            }
+        }
+
+        if (rejectedCount > 0) {
+            // The view already painted the checkbox as checked; refresh so it reverts to match the
+            // store, which never recorded the over-limit selection.
+            treeDataProvider.refresh();
+            void notify(
+                "warning",
+                `Selection limit reached: up to ${maxSelectedProjects} project(s) can be selected for a batch deployment at once.`,
+                {
+                    detail: `${rejectedCount} project(s) were not selected. Raise the codebuild.batchDeploy.maxSelectedProjects setting to allow more.`
+                }
             );
         }
     });

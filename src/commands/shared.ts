@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { AppStore, BuildState, Project } from "../state/store";
+import { filterProjectsBySearch } from "../state/store";
 import { sanitizeLogValue } from "../logging/outputChannelManager";
 import { formatProjectScope, formatScope, notify } from "../notifications/notifier";
 import { getRecentGitBranchSuggestions } from "../git/gitService";
@@ -245,12 +246,7 @@ export function hasProjectInScope(projects: Project[], projectName: string): boo
     return projects.some((project) => project.name === projectName);
 }
 
-export function filterProjectsBySearch(projects: Project[], filterText: string): Project[] {
-    const normalizedFilter = filterText.trim().toLowerCase();
-    return projects
-        .filter((project) => !normalizedFilter || project.name.toLowerCase().includes(normalizedFilter))
-        .sort((a, b) => a.name.localeCompare(b.name));
-}
+export { filterProjectsBySearch } from "../state/store";
 
 export function getVisibleProjects(store: AppStore): Project[] {
     const state = store.getState();
