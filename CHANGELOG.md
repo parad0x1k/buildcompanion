@@ -27,6 +27,7 @@ All notable changes to BuildCompanion for AWS CodeBuild are documented in this f
 
 ### Changed
 - `View Logs` no longer automatically shows/focuses the shared `BuildCompanion` output channel; logs still stream into it in the background for continuity, but the primary, focused surface is now the per-build log viewer document.
+- Startup profile/project discovery and active-build reconciliation (`[REFRESH]`/`[RECONCILE]` output channel tags) now log a timed progress line on success, not just on failure, so a slow-but-succeeding activation is visible in the output channel instead of showing only the initial "BuildCompanion activated" line.
 
 ## [0.1.1] — 2026-09-22
 

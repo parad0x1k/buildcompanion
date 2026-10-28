@@ -6,7 +6,7 @@ import {
 import { clearAwsClientCache } from "../aws/clientFactory";
 import { getUserFriendlyErrorMessage } from "../aws/errorHandling";
 import type { AppStore } from "../state/store";
-import { getOutputChannel, logError, sanitizeLogValue } from "../logging/outputChannelManager";
+import { getOutputChannel, logError, logInfo, sanitizeLogValue } from "../logging/outputChannelManager";
 import { formatScope, notify } from "../notifications/notifier";
 import { BUILD_HISTORY_LIMIT, showShortStatusMessage, type CommandDeps } from "./shared";
 import { refreshProfilesAndProjects, switchProfile, switchRegionAndReload, setTemporaryCredentials } from "./profileCommands";
@@ -155,7 +155,11 @@ export function registerCodeBuildCommands({ context, store }: CommandDeps): void
 }
 
 export async function initializeCommandState(context: vscode.ExtensionContext, store: AppStore): Promise<void> {
+    const startedAtMs = Date.now();
+    logInfo("[RECONCILE] Starting profile/project discovery...");
+
     await refreshProfilesAndProjects(context, store);
+    logInfo(`[RECONCILE] Profile/project discovery finished in ${Date.now() - startedAtMs}ms`);
 
     const state = store.getState();
     if (!state.currentProfile) {
@@ -164,6 +168,7 @@ export async function initializeCommandState(context: vscode.ExtensionContext, s
     }
 
     try {
+        const activeBuildsStartedAtMs = Date.now();
         const activeBuilds = await listRecentActiveBuilds(
             state.currentProfile,
             state.currentRegion,
@@ -171,6 +176,7 @@ export async function initializeCommandState(context: vscode.ExtensionContext, s
             { secretStorage: context.secrets }
         );
         store.setActiveBuilds(activeBuilds);
+        logInfo(`[RECONCILE] Active build reconciliation finished in ${Date.now() - activeBuildsStartedAtMs}ms (${activeBuilds.length} active build(s))`);
     } catch (error) {
         const message = getUserFriendlyErrorMessage(error, {
             profile: state.currentProfile,

@@ -60,7 +60,9 @@ export async function refreshProfilesAndProjects(
 ): Promise<void> {
     const previousState = store.getState();
 
+    const profilesStartedAtMs = Date.now();
     const profiles = await listAwsProfiles({ secretStorage: context.secrets });
+    logInfo(`[REFRESH] Discovered ${profiles.length} AWS profile(s) in ${Date.now() - profilesStartedAtMs}ms`);
     store.setProfiles(profiles);
 
     const currentProfile = previousState.currentProfile;
@@ -98,9 +100,11 @@ export async function refreshProfilesAndProjects(
     let retryCount = 0;
     while (true) {
         try {
+            const projectsStartedAtMs = Date.now();
             const projects = await listCodeBuildProjects(selectedProfile.name, activeRegion, {
                 secretStorage: context.secrets
             });
+            logInfo(`[REFRESH] Loaded ${projects.length} CodeBuild project(s) for ${formatSanitizedScope(selectedProfile.name, activeRegion)} in ${Date.now() - projectsStartedAtMs}ms`);
 
             store.batchUpdate(() => {
                 store.setCurrentProfile(selectedProfile.name);
