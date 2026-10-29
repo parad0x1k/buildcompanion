@@ -68,6 +68,18 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
         this.onDidChangeTreeDataEmitter.fire();
     }
 
+    /**
+     * Refreshes only the given node (and its descendants) instead of the whole tree. Use this
+     * when the state change is already known to be scoped to that element, to avoid forcing
+     * every other visible section (Projects, Active Builds, Failed Builds, ...) to re-render.
+     */
+    private refreshElement(element: TreeNode): void {
+        if (this.disposed) {
+            return;
+        }
+        this.onDidChangeTreeDataEmitter.fire(element);
+    }
+
     private getProjectVisibility(state: ReturnType<AppStore["getState"]>): {
         visibleProjects: Project[];
         canSelectVisibleProjects: boolean;
@@ -699,7 +711,9 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                         );
                     }).finally(() => {
                         this.loadingHistoryKeys.delete(loadingKey);
-                        this.refresh();
+                        // Loading only ever affects this one project's history group, so refresh
+                        // just that node rather than firing a whole-tree refresh.
+                        this.refreshElement(element);
                     });
                 }
 

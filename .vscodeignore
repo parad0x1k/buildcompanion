@@ -1,7 +1,13 @@
-# TypeScript sources — compiled output is in out/
+# TypeScript sources — compiled/bundled output is in dist/ (see esbuild.js)
 src/
 extension.ts
 tsconfig.json
+
+# out/ (tsc's per-file output, used only by the test suite) and node_modules/ (inlined into
+# dist/extension.js by esbuild) are no longer needed at runtime now that "main" points at the
+# bundled dist/extension.js — see esbuild.js.
+out/
+node_modules/
 
 # Source maps — keep .js only for distribution
 **/*.js.map
@@ -19,6 +25,9 @@ deps-top.txt
 .vscode/
 .github/
 .gitignore
+
+# Local MCP server configuration (personal tool setup, not part of the extension)
+.mcp.json
 
 # Generated packages
 *.vsix

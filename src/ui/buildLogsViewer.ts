@@ -36,6 +36,15 @@ type ViewerState = {
     refreshTimer?: NodeJS.Timeout;
     /** When true, `appendLines` never truncates - used by the "full log" snapshot view. */
     unbounded?: boolean;
+    /**
+     * Incrementally-maintained `lines.join("\n")`, extended with only the newly appended lines
+     * on each `appendLines` call. Only kept for `unbounded` documents: bounded/tail documents can
+     * truncate from the front, which would invalidate an incremental join, but they're capped at
+     * `getMaxViewerLines()` anyway so rejoining `lines` from scratch there stays cheap. Without
+     * this, "View Full Log" would re-spread and re-join the entire (up to tens of thousands of
+     * lines) buffer on every throttled refresh while a large log streams in.
+     */
+    cachedLinesBody?: string;
 };
 
 function getMaxViewerLines(): number {
@@ -129,6 +138,10 @@ export class BuildLogsDocumentProvider implements vscode.TextDocumentContentProv
                 state.lines.splice(0, overflow);
                 state.truncatedCount += overflow;
             }
+        } else {
+            state.cachedLinesBody = state.cachedLinesBody !== undefined
+                ? `${state.cachedLinesBody}\n${newLines.join("\n")}`
+                : newLines.join("\n");
         }
 
         this.scheduleRefresh(uri, state);
@@ -174,7 +187,13 @@ export class BuildLogsDocumentProvider implements vscode.TextDocumentContentProv
             parts.push(`… (${state.truncatedCount} earlier line(s) truncated to keep this view responsive) …`, "");
         }
 
-        parts.push(...state.lines);
+        if (state.lines.length > 0) {
+            // join(sep) of [a, b, c] equals join(sep) of [a, "b\nc"], so substituting the cached
+            // join for the individual lines here doesn't change the final joined output below.
+            parts.push(state.unbounded && state.cachedLinesBody !== undefined
+                ? state.cachedLinesBody
+                : state.lines.join("\n"));
+        }
 
         if (state.footer) {
             parts.push("", state.footer);
