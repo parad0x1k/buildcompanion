@@ -52,9 +52,15 @@
     "url": "git+https://github.com/parad0x1k/buildcompanion.git"
   },
   "engines": {
-    "vscode": "^1.85.0",
+    "vscode": "^1.95.0",
     "node": ">=20.0.0"
   },
+  "activationEvents": [
+    "onLanguageModelTool:codebuild_trigger_build",
+    "onLanguageModelTool:codebuild_list_projects",
+    "onLanguageModelTool:codebuild_get_build_status",
+    "onLanguageModelTool:codebuild_list_recent_builds"
+  ],
   "contributes": {
     "commands": [
       {
@@ -199,6 +205,134 @@
         "command": "codebuild.openTerminal",
         "title": "Open AWS Setup Terminal",
         "category": "BuildCompanion"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "codebuild_trigger_build",
+        "displayName": "Trigger CodeBuild Build",
+        "toolReferenceName": "triggerBuild",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(play)",
+        "userDescription": "Trigger a CodeBuild build",
+        "modelDescription": "Starts a new AWS CodeBuild build for the given project, using its default source version unless a branch/tag/commit is provided. This is a MUTATING operation: it runs the project's configured build steps under the project's own IAM service role, may incur AWS cost, and is not reversible from this tool (there is no stop/cancel tool). It does NOT support build-scoped overrides (environment variables, buildspec, compute image, privileged mode, timeouts) - those are intentionally never exposed to this tool; if the user needs an override, tell them to use BuildCompanion's \"Start Build with Overrides...\" command in VS Code instead. profile and region must be exact, explicit values - never guess or reuse values from earlier in the conversation without the user confirming they still apply. If a build is already in progress for the project, this returns an ALREADY_IN_PROGRESS result instead of starting a second one; ask the user how to proceed rather than retrying automatically. Requires the codebuild:StartBuild IAM permission.",
+        "tags": ["aws", "codebuild"],
+        "when": "config.codebuild.agentTools.enabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "description": "The exact AWS profile name to use (as configured in ~/.aws/config, ~/.aws/credentials, or a BuildCompanion temporary-credential profile). Required: do not infer this from whatever happens to be selected in the BuildCompanion tree view."
+            },
+            "region": {
+              "type": "string",
+              "description": "The exact AWS region to target, e.g. us-east-1. Required: do not infer this from the tree view's current selection."
+            },
+            "project_name": {
+              "type": "string",
+              "description": "The exact CodeBuild project name to trigger a build for."
+            },
+            "branch": {
+              "type": "string",
+              "description": "Optional git branch, tag, or commit ID to use as the build's source version. Omit to use the project's default source version."
+            }
+          },
+          "required": ["profile", "region", "project_name"]
+        }
+      },
+      {
+        "name": "codebuild_list_projects",
+        "displayName": "List CodeBuild Projects",
+        "toolReferenceName": "listCodeBuildProjects",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(list-tree)",
+        "userDescription": "List CodeBuild projects",
+        "modelDescription": "Lists AWS CodeBuild project names visible to the given AWS profile and region. Read-only: does not start, stop, or modify anything. Requires the codebuild:ListProjects IAM permission.",
+        "tags": ["aws", "codebuild"],
+        "when": "config.codebuild.agentTools.enabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "description": "The exact AWS profile name to list CodeBuild projects for."
+            },
+            "region": {
+              "type": "string",
+              "description": "The exact AWS region to list CodeBuild projects in."
+            }
+          },
+          "required": ["profile", "region"]
+        }
+      },
+      {
+        "name": "codebuild_get_build_status",
+        "displayName": "Get CodeBuild Build Status",
+        "toolReferenceName": "getBuildStatus",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(info)",
+        "userDescription": "Get CodeBuild build status",
+        "modelDescription": "Fetches the current status of one or more AWS CodeBuild builds by their exact build IDs (e.g. a build ID returned by the trigger_build or list_recent_builds tools). Read-only; up to 100 build IDs per call. A build ID that doesn't exist is reported individually as found: false rather than failing the whole call. Requires the codebuild:BatchGetBuilds IAM permission.",
+        "tags": ["aws", "codebuild"],
+        "when": "config.codebuild.agentTools.enabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "description": "The exact AWS profile name to use."
+            },
+            "region": {
+              "type": "string",
+              "description": "The exact AWS region the build(s) are in."
+            },
+            "build_ids": {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1,
+              "maxItems": 100,
+              "description": "One or more exact CodeBuild build IDs (e.g. my-project:1234abcd-...) to fetch current status for."
+            }
+          },
+          "required": ["profile", "region", "build_ids"]
+        }
+      },
+      {
+        "name": "codebuild_list_recent_builds",
+        "displayName": "List Recent CodeBuild Builds",
+        "toolReferenceName": "listRecentBuilds",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(history)",
+        "userDescription": "List recent build history for a project",
+        "modelDescription": "Lists recent build history (most recent first) for a single AWS CodeBuild project: build ID, status, source version, start/end time, and duration. Read-only. Returns at most 100 builds per call (set limit to control how many are returned, default 20). If the result's truncated field is true, more history may exist beyond what was returned. Requires the codebuild:ListBuildsForProject and codebuild:BatchGetBuilds IAM permissions.",
+        "tags": ["aws", "codebuild"],
+        "when": "config.codebuild.agentTools.enabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "description": "The exact AWS profile name to use."
+            },
+            "region": {
+              "type": "string",
+              "description": "The exact AWS region the project is in."
+            },
+            "project_name": {
+              "type": "string",
+              "description": "The exact CodeBuild project name to fetch recent build history for."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20,
+              "description": "Maximum number of recent builds to return, most recent first. Capped at 100."
+            }
+          },
+          "required": ["profile", "region", "project_name"]
+        }
       }
     ],
     "viewsContainers": {
@@ -375,6 +509,11 @@
     "configuration": {
       "title": "BuildCompanion",
       "properties": {
+        "codebuild.agentTools.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Expose BuildCompanion operations (trigger a build; list projects; get build status; list recent build history) as VS Code Language Model Tools that compatible AI agents (e.g. GitHub Copilot Chat agent mode) can discover and call. Off by default: tool input/output (project names, build status, branch names) can be sent to the configured chat model backend, which is a new boundary beyond this extension's existing AWS-only communication - see the README's Privacy & Telemetry section before enabling. Builds triggered this way still go through the same confirmation, AWS permissions, and destructive-action safeguards as builds triggered from the tree view. VS Code's own 'Always Allow'/'Allow all'/organization auto-approve settings can suppress the per-call confirmation dialog for these tools; this extension cannot override that."
+        },
         "codebuild.monitor.adaptivePolling": {
           "type": "boolean",
           "default": true,
@@ -470,7 +609,7 @@
     "@types/mocha": "^10.0.10",
     "@types/node": "^25.5.0",
     "@types/sinon": "^22.0.0",
-    "@types/vscode": "1.85.0",
+    "@types/vscode": "^1.95.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.9.1",

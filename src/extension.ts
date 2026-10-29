@@ -9,6 +9,7 @@ import { BuildMonitor } from "./monitor/buildMonitor";
 import { disposeLogsStreaming } from "./aws/logsService";
 import { clearAwsClientCache } from "./aws/clientFactory";
 import { getConfiguredMaxBatchSelectedProjects } from "./aws/batchTriggerManager";
+import { registerAgentTools } from "./agent/registerAgentTools";
 import { logInfo, disposeOutputChannel } from "./logging/outputChannelManager";
 import { formatScope, notify } from "./notifications/notifier";
 import { registerBuildLogsDocumentProvider } from "./ui/buildLogsViewer";
@@ -106,6 +107,8 @@ export async function activate(context: vscode.ExtensionContext) {
     });
 
     registerCodeBuildCommands({ context, store });
+
+    context.subscriptions.push(registerAgentTools(context, store));
 
     // Profile/project/active-build discovery makes real AWS calls and can be slow (cold
     // credential resolution, SSO token refresh, network latency). Running it without blocking

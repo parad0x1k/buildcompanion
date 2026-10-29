@@ -4,8 +4,8 @@ This document is the exhaustive reference for supported behavior in the current 
 
 ## Version Scope
 
-- Extension package version: `1.0.0`
-- VS Code engine target: `^1.110.0`
+- Extension package version: tracked in `package.json` (`version` field) — currently `0.1.1`. This section previously hardcoded a stale value; prefer `package.json` as the source of truth if this drifts again.
+- VS Code engine target: tracked in `package.json` (`engines.vscode`) — currently `^1.95.0`.
 - Node engine target: `>=20.0.0`
 
 ## High-Level Capability Inventory
@@ -32,6 +32,7 @@ This document is the exhaustive reference for supported behavior in the current 
 - Scope-aware state (profile + region) for branches, selections, queues, and safety blocks
 - Managed output channel logging with redaction and retention controls
 - Permission-denied error messages that name the specific missing IAM action when known
+- Optional AI agent tools (`codebuild.agentTools.enabled`, off by default): four VS Code Language Model Tools - see "AI Agent Tools" below
 
 ## Architecture and Data Flow
 
@@ -40,6 +41,37 @@ This document is the exhaustive reference for supported behavior in the current 
 - AWS services: CodeBuild, CloudWatch Logs, credentials, profile and region handling
 - Monitor: background polling and queued build progression
 - UI: native TreeView provider (no webview)
+- Agent tools: `src/agent/` - thin `vscode.LanguageModelTool` adapters over the same AWS services/store used by commands, registered only when `codebuild.agentTools.enabled` is on
+
+## AI Agent Tools
+
+BuildCompanion can expose a small set of operations to compatible AI agents (e.g. GitHub Copilot Chat agent mode) via VS Code's native Language Model Tool API (`contributes.languageModelTools` + `vscode.lm.registerTool`) - not a standalone MCP server or CLI, since the intended caller is an agent already running inside the same VS Code session.
+
+**Enablement:** off by default. Set `codebuild.agentTools.enabled` to `true` to register the tools; the setting can be toggled live without reloading VS Code. Requires VS Code `^1.95.0` or later (the version that finalized the Language Model Tool API).
+
+**Design principles applied:**
+- Every tool requires explicit `profile`/`region` input and never falls back to whatever is currently selected in the tree view, to avoid targeting the wrong AWS account/region/project (a confused-deputy risk identified during design review).
+- Every tool returns a structured JSON result (serialized as the tool's text output) with an `ok` boolean and, on failure, a machine-readable `errorType` (`VALIDATION_ERROR`, `NOT_FOUND`, `ALREADY_IN_PROGRESS`, `BLOCKED`, `PERMISSION_DENIED`, `UNEXPECTED_ERROR`) plus a human-readable `message` - never raw AWS SDK error text, which can contain ARNs/account IDs.
+- The mutating tool (`codebuild_trigger_build`) shows a confirmation naming the literal resolved profile/region/project/branch before running (via `prepareInvocation`), and restates the same information in its result, since VS Code's own "Always Allow"/"Allow all"/organization auto-approve settings can suppress the confirmation dialog on repeat calls - the result is the one place that information reliably survives.
+- `codebuild_trigger_build` does not expose branch/image/buildspec/environment-variable/privileged-mode overrides. AWS documents several of those fields (`buildspecOverride`, `privilegedModeOverride`) as distinguished-risk, with their own IAM condition keys, specifically because they let the caller change what code runs under the project's service role. Use "Start Build with Overrides..." in the editor for that; it is not agent-callable.
+- `codebuild_trigger_build` is guarded by a per-(profile, region, project) in-flight lock and a deterministic `idempotencyToken`, and declines (with a structured `ALREADY_IN_PROGRESS` result) rather than queuing or force-starting when a build is already running for the project - there is no agent-reachable equivalent of the tree view's "Wait / Trigger anyway / Cancel" prompt.
+- Builds started via `codebuild_trigger_build` are tracked in the same `AppStore` as tree-view-triggered builds (Active Builds, Failed Builds attribution, TreeView status) and ride the same adaptive-polling budget - there is no separate agent-only state or polling loop.
+- Read-only tools bound their own output (`codebuild_get_build_status` accepts at most 100 build IDs per call; `codebuild_list_recent_builds` is capped at 100 results per call and reports `truncated` when more history may exist) so a single tool call can't silently fan out into unbounded AWS requests or model context.
+
+**Tools:**
+
+| Tool name | Mutating? | Purpose | Required IAM permission(s) |
+| --- | --- | --- | --- |
+| `codebuild_trigger_build` | Yes | Starts a build for an explicit project, using its default source version or an optional branch/tag/commit | `codebuild:StartBuild` |
+| `codebuild_list_projects` | No | Lists CodeBuild project names for an explicit profile/region | `codebuild:ListProjects` |
+| `codebuild_get_build_status` | No | Fetches current status for up to 100 explicit build IDs | `codebuild:BatchGetBuilds` |
+| `codebuild_list_recent_builds` | No | Lists recent build history (status, source version, timing) for one project, up to 100 results | `codebuild:ListBuildsForProject`, `codebuild:BatchGetBuilds` |
+
+No additional IAM permissions are required beyond what the equivalent tree-view actions already use, and `iam:PassRole` is never required (verified against the AWS Service Authorization Reference: it is only a dependent action for `StartBuild`/`UpdateProject` when a `serviceRoleOverride`/`serviceRole` field is set, which this feature never does).
+
+**Out of scope (by design, for this release):** build-scoped overrides, permanent project configuration changes, stop/cancel, and retry are not agent-callable. This is a deliberate, narrower surface than the human command palette, not an oversight - see the project's design review history for the reasoning before expanding it.
+
+**Forward-looking guardrail for future tools:** none of the current tools return CodeBuild project environment variable values (`codebuild_list_projects` returns only project names). If a future agent tool ever surfaces project environment variables (e.g. an agent-callable equivalent of "Edit Environment Variables"), `PLAINTEXT`-typed variable *values* must be redacted by default in that tool's output (show `name`+`type`, mask the `value`) before it ships - regardless of what the human-facing QuickPick UI shows, since tool output can be sent to a remote chat model backend and potentially persisted in chat history. `PARAMETER_STORE`/`SECRETS_MANAGER`-typed values are lower risk since AWS stores only the parameter/secret *name* in those cases, not the resolved secret content.
 
 ## Commands and Registrations
 

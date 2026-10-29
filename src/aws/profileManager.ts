@@ -28,26 +28,58 @@ async function readFileIfPresent(filePath: string): Promise<string> {
 }
 
 /**
- * Minimal INI parser for AWS config/credentials files.
- *
- * Known limitations (edge cases not handled):
- *  - Multi-line values via line-continuation backslash (`\`)
- *  - Quoted string values
- *  - `%include` directives
- *  - Nested sub-section properties (e.g. `sso_session` blocks with child keys)
- *
- * These are uncommon in practice and the standard `aws configure` tooling does not
- * generate them. If broader compatibility is needed, replace this parser with
- * `@aws-sdk/shared-ini-file-loader` which is already a transitive dependency.
+ * Strips a single layer of matching surrounding quotes (`"..."` or `'...'`) from an INI value,
+ * so e.g. `region = "us-west-2"` resolves to `us-west-2` rather than the literal quoted string.
  */
-function parseIni(content: string): IniSections {
+function stripMatchingQuotes(value: string): string {
+    if (value.length >= 2) {
+        const first = value[0];
+        const last = value[value.length - 1];
+        if ((first === "\"" && last === "\"") || (first === "'" && last === "'")) {
+            return value.slice(1, -1);
+        }
+    }
+
+    return value;
+}
+
+/**
+ * INI parser for AWS config/credentials files, covering the common real-world format: section
+ * headers, `key = value` pairs, `#`/`;` comment lines, quoted values, and indented continuation
+ * lines (a value that wraps onto a following, indented line - e.g. a long `role_arn` chain).
+ *
+ * Known limitations (edge cases not handled, considered low-value for what this module actually
+ * needs - listing profile names/type/region, not full credential resolution):
+ *  - `%include` directives
+ *  - Nested sub-section properties (e.g. a top-level `[sso-session NAME]` block's own keys; the
+ *    simpler `sso_session = NAME` key on the profile itself, which this parser does read, is
+ *    already sufficient to classify a profile as SSO)
+ *
+ * There is no current, stable, non-internal package to delegate this to instead:
+ * `@aws-sdk/shared-ini-file-loader` is deprecated in favor of `@smithy/shared-ini-file-loader`,
+ * which itself now just re-exports `@smithy/core/config` - and the relevant functions there
+ * (`parseKnownFiles`, `loadSharedConfigFiles`) are explicitly marked `@internal` in that
+ * package's own type declarations, i.e. not a supported public API to depend on. Keeping this
+ * small, self-owned, fully-tested parser is the more maintainable choice today.
+ */
+export function parseIni(content: string): IniSections {
     const sections: IniSections = {};
     let currentSection: string | null = null;
+    let lastKey: string | null = null;
 
     for (const rawLine of content.split(/\r?\n/)) {
+        // Leading whitespace is the continuation signal and must be checked before trimming,
+        // since trimming would make a continuation line indistinguishable from a normal one.
+        const isIndented = /^[ \t]/.test(rawLine);
         const line = rawLine.trim();
 
         if (!line || line.startsWith("#") || line.startsWith(";")) {
+            continue;
+        }
+
+        if (isIndented && currentSection && lastKey && !/^\[.+]$/.test(line)) {
+            const existingValue = sections[currentSection][lastKey] ?? "";
+            sections[currentSection][lastKey] = `${existingValue} ${stripMatchingQuotes(line)}`.trim();
             continue;
         }
 
@@ -55,6 +87,7 @@ function parseIni(content: string): IniSections {
         if (sectionMatch) {
             currentSection = sectionMatch[1].trim();
             sections[currentSection] = sections[currentSection] ?? {};
+            lastKey = null;
             continue;
         }
 
@@ -68,8 +101,9 @@ function parseIni(content: string): IniSections {
         }
 
         const key = line.slice(0, separatorIndex).trim();
-        const value = line.slice(separatorIndex + 1).trim();
+        const value = stripMatchingQuotes(line.slice(separatorIndex + 1).trim());
         sections[currentSection][key] = value;
+        lastKey = key;
     }
 
     return sections;

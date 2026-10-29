@@ -20,7 +20,7 @@ BuildCompanion is a native VS Code extension to trigger, monitor, and debug AWS 
 
 ## Privacy & Telemetry
 
-This extension makes **no network calls outside the AWS endpoints implied by the active profile and region**. It collects **no telemetry** and ships **no analytics SDK**. The `telemetry.telemetryLevel` VS Code setting is respected by default (no-op since no telemetry is sent). All AWS credentials live in your local AWS configuration files or in VS Code's encrypted Secret Storage; they are never written to logs, never transmitted to third parties, and never persisted in plaintext.
+This extension makes **no network calls outside the AWS endpoints implied by the active profile and region**, with one opt-in exception: if you enable `codebuild.agentTools.enabled` (default **off**) to let a compatible AI agent (e.g. GitHub Copilot Chat agent mode) discover and call BuildCompanion's agent tools, the inputs and outputs of those tool calls (project names, build status, branch names) are sent to whichever chat model backend you have configured, like any other tool call in that chat session. This extension collects **no telemetry** and ships **no analytics SDK**. The `telemetry.telemetryLevel` VS Code setting is respected by default (no-op since no telemetry is sent). All AWS credentials live in your local AWS configuration files or in VS Code's encrypted Secret Storage; they are never written to logs, never transmitted to third parties, and never persisted in plaintext. Credentials never flow through agent tool input/output, regardless of whether agent tools are enabled.
 
 ## Compliance & FIPS Notice
 
@@ -45,12 +45,12 @@ This extension is a community tool and has **not** been developed, tested, or va
 1. Open VS Code.
 2. Open Extensions.
 3. Select "Install from VSIX...".
-4. Choose a package file such as `buildcompanion-1.1.0.vsix`.
+4. Choose the package file matching the version you downloaded (e.g. `buildcompanion-0.1.1.vsix`).
 5. Reload VS Code.
 
 ## Requirements
 
-- VS Code: `^1.85.0`
+- VS Code: `^1.95.0`
 - Node.js: `>=20.0.0` (development only)
 - AWS account access to CodeBuild and CloudWatch Logs
 - One of the supported auth sources:
@@ -104,6 +104,7 @@ If a permission is missing, the failed action shows a short notification and log
 - Failure summary extraction from recent log lines.
 - Search and filtering of projects in TreeView (comma-separated terms match any, e.g. `api,fe,middleware`).
 - Failed Builds section tracking builds you triggered via BuildCompanion that ended in failure, with one-click retry.
+- Optional AI agent tools (`codebuild.agentTools.enabled`, off by default): lets a compatible AI agent trigger a build or query project/build status/history through the same validated logic as the tree view. See [FEATURE_REFERENCE.md](FEATURE_REFERENCE.md) for the full tool list, scope, and permissions.
 - Scope-aware state for profile, region, branches, selections, queued items, and destructive-action blocks.
 - Output channel logging with identifier redaction by default and configurable retention.
 - Permission-denied failures name the specific missing IAM action where applicable.

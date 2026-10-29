@@ -15,7 +15,7 @@ Thanks for your interest in contributing! This project is a focused VS Code exte
 Prerequisites:
 
 - Node.js `>=20.0.0`
-- VS Code `^1.85.0`
+- VS Code `^1.95.0`
 - An AWS account you can safely test against (a sandbox or dev account is recommended)
 
 Bootstrap:
