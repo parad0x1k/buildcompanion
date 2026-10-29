@@ -450,7 +450,7 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "tsc -p ./ && node esbuild.js --production",
     "compile": "tsc -p ./ && node esbuild.js",
     "watch": "tsc -watch -p ./",
     "watch:bundle": "node esbuild.js --watch",
