@@ -1,7 +1,8 @@
 import * as assert from "node:assert/strict";
+import * as sinon from "sinon";
 import { BatchGetBuildsCommand } from "@aws-sdk/client-codebuild";
 import { GetLogEventsCommand } from "@aws-sdk/client-cloudwatch-logs";
-import { fetchFullBuildLog, sanitizeLogMessageForDisplay } from "../../aws/logsService";
+import { fetchFullBuildLog, isLogStreamingCancellationError, sanitizeLogMessageForDisplay, streamBuildLogs } from "../../aws/logsService";
 import { codeBuildMock, cloudWatchLogsMock } from "../awsMocks";
 
 describe("aws/logsService", () => {
@@ -135,6 +136,107 @@ describe("aws/logsService", () => {
             await assert.rejects(() => fetchFullBuildLog("", "us-east-1", "demo:123"));
             await assert.rejects(() => fetchFullBuildLog("dev", "", "demo:123"));
             await assert.rejects(() => fetchFullBuildLog("dev", "us-east-1", "   "));
+        });
+    });
+
+    describe("streamBuildLogs status-check throttling", () => {
+        let clock: sinon.SinonFakeTimers;
+
+        beforeEach(() => {
+            codeBuildMock.reset();
+            cloudWatchLogsMock.reset();
+            clock = sinon.useFakeTimers();
+        });
+
+        afterEach(() => {
+            clock.restore();
+        });
+
+        it("checks build status on only some idle polls instead of every single one while the build is still running", async () => {
+            codeBuildMock.on(BatchGetBuildsCommand).resolves({
+                builds: [{
+                    id: "demo:123",
+                    projectName: "demo",
+                    buildStatus: "IN_PROGRESS",
+                    logs: { groupName: "/aws/codebuild/demo", streamName: "demo-stream" }
+                }]
+            });
+            // A stable token with no events simulates a build that's quiet (still running,
+            // nothing new to show) for many consecutive polls in a row.
+            cloudWatchLogsMock.on(GetLogEventsCommand).resolves({ events: [], nextForwardToken: "token-a" });
+
+            const controller = new AbortController();
+            const streamPromise = streamBuildLogs("dev", "us-east-1", "demo:123", {
+                signal: controller.signal,
+                pollIntervalMs: 2000
+            });
+
+            // Drive 8 idle polls worth of (simulated) time without the build ever finishing.
+            for (let i = 0; i < 8; i += 1) {
+                await clock.tickAsync(2000);
+            }
+
+            controller.abort();
+            await clock.tickAsync(0);
+            await assert.rejects(streamPromise, (error: unknown) => isLogStreamingCancellationError(error));
+
+            const totalCalls = codeBuildMock.commandCalls(BatchGetBuildsCommand).length;
+            // 1 call resolves the initial log location; checking on every one of the 8 idle
+            // polls afterward (the old behavior) would add 8 more (9 total). Throttling to every
+            // other idle poll should land roughly around 1 + 4, comfortably under that, while
+            // still checking more than once (i.e. still checking periodically, not never).
+            assert.ok(
+                totalCalls >= 3 && totalCalls <= 6,
+                `expected a throttled call count (roughly 1 initial + ~4 checks), got ${totalCalls}`
+            );
+        });
+
+        it("stops checking build status once a terminal state is confirmed, instead of re-checking on every remaining idle poll", async () => {
+            codeBuildMock
+                .on(BatchGetBuildsCommand)
+                .resolvesOnce({
+                    // Initial log-location resolution: still running.
+                    builds: [{
+                        id: "demo:123",
+                        projectName: "demo",
+                        buildStatus: "IN_PROGRESS",
+                        logs: { groupName: "/aws/codebuild/demo", streamName: "demo-stream" }
+                    }]
+                })
+                .resolves({
+                    // Every in-loop check from here on: already finished.
+                    builds: [{ id: "demo:123", projectName: "demo", buildStatus: "SUCCEEDED" }]
+                });
+            cloudWatchLogsMock.on(GetLogEventsCommand).resolves({ events: [], nextForwardToken: "token-a" });
+
+            const resultPromise = streamBuildLogs("dev", "us-east-1", "demo:123", { pollIntervalMs: 2000 });
+
+            // Enough idle polls for the throttled check to have run at least once and observed
+            // the now-SUCCEEDED status (and, since the log token has stopped advancing too, for
+            // the stream to have already ended on its own).
+            for (let i = 0; i < 4; i += 1) {
+                await clock.tickAsync(2000);
+            }
+
+            const callsOnceTerminalConfirmed = codeBuildMock.commandCalls(BatchGetBuildsCommand).length;
+            assert.ok(
+                callsOnceTerminalConfirmed >= 2,
+                "expected at least one in-loop status check in addition to the initial one"
+            );
+
+            // A terminal build can't revert to running, so even several more idle polls'
+            // worth of time shouldn't trigger any further status checks.
+            for (let i = 0; i < 4; i += 1) {
+                await clock.tickAsync(2000);
+            }
+
+            assert.equal(
+                codeBuildMock.commandCalls(BatchGetBuildsCommand).length,
+                callsOnceTerminalConfirmed,
+                "no further status checks should happen once a terminal build state is already confirmed"
+            );
+
+            await resultPromise;
         });
     });
 });

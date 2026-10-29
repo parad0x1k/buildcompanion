@@ -16,6 +16,11 @@ const DEFAULT_POLL_INTERVAL_MS = 2500;
 const DEFAULT_MAX_EMPTY_POLLS = 4;
 const DEFAULT_RECENT_LINE_BUFFER_SIZE = 500;
 const DEFAULT_LOG_LOCATION_TIMEOUT_MS = 120000;
+// While a build's status is still unconfirmed (not yet known to be terminal), re-check it only
+// every Nth consecutive idle poll (no new log events) instead of on every single one. CloudWatch
+// returning nothing new just means "quiet right now", not "finished" - checking this aggressively
+// mostly duplicates what BuildMonitor already tracks in the background for builds it's watching.
+const STATUS_CHECK_EVERY_N_IDLE_POLLS = 2;
 const MAX_RECOVERABLE_POLL_ERRORS = 5;
 const MAX_RECOVERABLE_BACKOFF_MS = 10000;
 const MAX_LOGS_NOT_READY_RETRIES = 5;
@@ -346,6 +351,7 @@ export async function streamBuildLogs(
         let buildStatus: BuildStatus = location.status;
         let nextForwardToken: string | undefined;
         let emptyPolls = 0;
+        let idlePollsSinceStatusCheck = 0;
         const recentLogLines: string[] = [];
         let consecutiveRecoverableErrors = 0;
 
@@ -387,21 +393,30 @@ export async function streamBuildLogs(
                     // CloudWatch events collapses into a single viewer update.
                     options?.onLogLines?.(viewerLines);
                     emptyPolls = 0;
+                    idlePollsSinceStatusCheck = 0;
                 } else {
                     emptyPolls += 1;
                 }
 
                 const tokenDidNotAdvance = previousToken !== undefined && nextForwardToken === previousToken;
                 if (tokenDidNotAdvance || events.length === 0) {
-                    const latestBuild = await getBuildStatus(
-                        normalizedProfile,
-                        normalizedRegion,
-                        normalizedBuildId,
-                        { secretStorage: options?.secretStorage, signal }
-                    );
+                    // A terminal status can't revert to running, so once it's confirmed there's
+                    // nothing left to learn from another GetBuild call - the checks below just
+                    // wait out maxEmptyPolls for any trailing log lines to finish flushing.
+                    idlePollsSinceStatusCheck += 1;
+                    if (!isTerminalState(buildStatus) && idlePollsSinceStatusCheck >= STATUS_CHECK_EVERY_N_IDLE_POLLS) {
+                        idlePollsSinceStatusCheck = 0;
 
-                    if (latestBuild) {
-                        buildStatus = latestBuild.status;
+                        const latestBuild = await getBuildStatus(
+                            normalizedProfile,
+                            normalizedRegion,
+                            normalizedBuildId,
+                            { secretStorage: options?.secretStorage, signal }
+                        );
+
+                        if (latestBuild) {
+                            buildStatus = latestBuild.status;
+                        }
                     }
 
                     if (isTerminalState(buildStatus) && tokenDidNotAdvance) {
