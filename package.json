@@ -380,6 +380,13 @@
           "default": true,
           "description": "Automatically increases polling interval when many builds are active to reduce CPU and API pressure."
         },
+        "codebuild.monitor.pollIntervalMs": {
+          "type": "integer",
+          "default": 5000,
+          "minimum": 3000,
+          "maximum": 15000,
+          "description": "Base interval, in milliseconds, between active-build status checks while auto-refresh is on. Increase this if AWS throttles CodeBuild requests (e.g. ThrottlingException) in your account. Scales up automatically as more builds are active when codebuild.monitor.adaptivePolling is enabled."
+        },
         "codebuild.monitor.maxConcurrentStatusChecks": {
           "type": "integer",
           "default": 6,

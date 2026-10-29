@@ -240,7 +240,8 @@ Selecting more than `codebuild.batchDeploy.maxSelectedProjects` (default `25`) p
 
 ## Monitoring and Notifications
 
-- Active build polling is enabled by default.
+- Activation no longer waits on AWS: the tree view and all commands are available immediately, and populate in the background once profile/project discovery finishes (useful on slow networks, cold credential/SSO resolution, or Dev Containers).
+- Active build polling is enabled by default, starting at `codebuild.monitor.pollIntervalMs` (default `5000` ms; raise this if your account sees CodeBuild API throttling).
 - Adaptive polling can automatically increase poll interval when many builds are active.
 - Completion notifications are shown for success, failure, timeout, fault, and stopped states, and name the branch/source version that was built.
 - Failure notifications include a `Retry Build` button to immediately restart the same build without leaving the notification.
@@ -253,6 +254,7 @@ Selecting more than `codebuild.batchDeploy.maxSelectedProjects` (default `25`) p
 | Setting | Default | Description |
 | --- | --- | --- |
 | `codebuild.monitor.adaptivePolling` | `true` | Increase polling interval with higher active-build count to reduce pressure |
+| `codebuild.monitor.pollIntervalMs` | `5000` | Base interval (ms) between active-build status checks (`3000` to `15000`); raise if AWS throttles requests |
 | `codebuild.monitor.maxConcurrentStatusChecks` | `6` | Maximum parallel status-check concurrency (`1` to `20`) |
 | `codebuild.performanceDiagnostics.enabled` | `false` | Emit periodic monitor performance diagnostics |
 | `codebuild.logging.maxOutputLines` | `8000` | Output retention threshold; set `0` to disable automatic clearing |

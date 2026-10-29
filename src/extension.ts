@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { createAppStore } from "./state/store";
 import { getPersistedBuildTimeDisplayFormat } from "./state/timeDisplayPreference";
 import { getPersistedFailedBuilds } from "./state/failedBuildsPersistence";
+import { getEnvironmentRegion, getPersistedRegion, resolveDefaultRegion } from "./aws/regionManager";
 import { CodeBuildTreeDataProvider, type TreeNode } from "./ui/treeDataProvider";
 import { initializeCommandState, loadBuildHistoryForProject, registerCodeBuildCommands } from "./commands";
 import { BuildMonitor } from "./monitor/buildMonitor";
@@ -17,19 +18,21 @@ let activeBuildMonitor: BuildMonitor | null = null;
 export async function activate(context: vscode.ExtensionContext) {
     logInfo("BuildCompanion activated");
 
+    // Seeded here (not just resolved later inside refreshProfilesAndProjects) because that function
+    // only applies the persisted/env-resolved region when the store's *current* region isn't already
+    // a recognized one - and the store's hardcoded construction default ("us-east-1") always is,
+    // which previously made the persisted region get silently discarded on every startup.
+    const initialRegion = resolveDefaultRegion({
+        persistedRegion: getPersistedRegion(context),
+        environmentRegion: getEnvironmentRegion()
+    });
+
     const store = createAppStore({
+        currentRegion: initialRegion,
         buildTimeDisplayFormat: getPersistedBuildTimeDisplayFormat(context),
         failedBuilds: getPersistedFailedBuilds(context)
     });
     context.subscriptions.push(store);
-
-    try {
-        await initializeCommandState(context, store);
-    } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown initialization error";
-        void notify("error", `Initialization failed in ${formatScope(null, "unknown-region")}: ${message}`);
-        return;
-    }
 
     const treeDataProvider = new CodeBuildTreeDataProvider(
         store,
@@ -96,7 +99,6 @@ export async function activate(context: vscode.ExtensionContext) {
     activeBuildMonitor = new BuildMonitor(context, store);
     activeBuildMonitor.start();
     context.subscriptions.push(activeBuildMonitor);
-
     context.subscriptions.push({
         dispose: () => {
             disposeLogsStreaming();
@@ -104,6 +106,15 @@ export async function activate(context: vscode.ExtensionContext) {
     });
 
     registerCodeBuildCommands({ context, store });
+
+    // Profile/project/active-build discovery makes real AWS calls and can be slow (cold
+    // credential resolution, SSO token refresh, network latency). Running it without blocking
+    // activate() means the tree view and every command are usable immediately; the tree already
+    // reacts to store updates, so it fills in once discovery completes in the background.
+    void initializeCommandState(context, store).catch((error) => {
+        const message = error instanceof Error ? error.message : "Unknown initialization error";
+        void notify("error", `Initialization failed in ${formatScope(null, "unknown-region")}: ${message}`);
+    });
 }
 
 export function deactivate() {

@@ -118,6 +118,7 @@ export async function cancelBuild(
         store.batchUpdate(() => {
             store.setActiveBuilds(nextActiveBuilds);
             store.setProjects(setProjectStatus(latestState.projects, stoppedBuild.projectName, stoppedBuild.status));
+            store.clearExtensionTriggeredBuild(stoppedBuild.id);
         });
 
         showShortStatusMessage(`Cancel succeeded for ${formatProjectScope(buildToCancel.projectName, buildToCancel.profile, buildToCancel.region)}`);
@@ -261,6 +262,9 @@ export async function cancelAllBuilds(
         store.batchUpdate(() => {
             store.setActiveBuilds(latestState.activeBuilds.filter((build) => !stoppedIds.has(build.id)));
             store.setProjects(nextProjects);
+            for (const stoppedId of stoppedIds) {
+                store.clearExtensionTriggeredBuild(stoppedId);
+            }
         });
     }
 

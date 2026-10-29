@@ -300,6 +300,7 @@ Both flows below share one QuickPick-driven "category hub" (`src/commands/projec
 - On initialization, recent active builds are loaded for selected scope.
 - `initializeCommandState` requests up to 50 builds.
 - Service clamps requested startup limit to range 20 to 50.
+- Profile/project/active-build discovery runs in the background and does not block `activate()`: the tree view and all commands are registered and usable immediately, and the tree fills in once discovery completes (reactively, via the existing store refresh mechanism). A failure here surfaces as an error notification instead of leaving the view/commands unregistered.
 
 ## Monitoring, Polling, and Notifications
 
@@ -312,18 +313,18 @@ Monitor behavior is active only when:
 
 Constants:
 
-- Base poll interval: 3000 ms
-- Min clamp: 2000 ms
-- Max clamp: 5000 ms
+- Base poll interval: 5000 ms (configurable via `codebuild.monitor.pollIntervalMs`)
+- Min clamp: 3000 ms
+- Max clamp: 15000 ms
 - Polling error notification cooldown per build: 30000 ms
 - Stale in-progress warning threshold: 2 hours
 
 Adaptive interval (when enabled):
 
-- active builds <= 2: 3000 ms
-- active builds 3 to 8: 3500 ms
-- active builds 9 to 20: 4000 ms
-- active builds >= 21: 5000 ms
+- active builds <= 2: base interval (default 5000 ms)
+- active builds 3 to 8: base + 1000 ms (default 6000 ms)
+- active builds 9 to 20: base + 3000 ms (default 8000 ms)
+- active builds >= 21: max clamp (15000 ms)
 
 Concurrency:
 
@@ -568,6 +569,7 @@ No-profile message:
 | Setting | Type | Default | Range | Behavior |
 | --- | --- | --- | --- | --- |
 | `codebuild.monitor.adaptivePolling` | boolean | `true` | n/a | Adaptive interval scaling by active build count |
+| `codebuild.monitor.pollIntervalMs` | integer | `5000` | `3000..15000` | Base interval between active-build status checks |
 | `codebuild.monitor.maxConcurrentStatusChecks` | integer | `6` | `1..20` | Max parallel status polling checks |
 | `codebuild.performanceDiagnostics.enabled` | boolean | `false` | n/a | Periodic monitor performance logs |
 | `codebuild.logging.maxOutputLines` | integer | `8000` | `0` or `>=1000` | Output history truncation threshold |
@@ -599,8 +601,8 @@ No-profile message:
 | Batch deploy | min delay | 1000 ms |
 | Batch deploy | max delay | 60000 ms |
 | Batch deploy | cancellation check interval | 250 ms |
-| Monitor | default poll interval | 3000 ms |
-| Monitor | poll interval bounds | 2000 to 5000 ms |
+| Monitor | default poll interval (configurable) | 5000 ms |
+| Monitor | poll interval bounds | 3000 to 15000 ms |
 | Monitor | stale build warning age | 2 hours |
 | Monitor | polling error notification cooldown | 30000 ms |
 | Monitor | default max concurrent checks | 6 |

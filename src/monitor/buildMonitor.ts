@@ -12,9 +12,9 @@ import { formatProjectScope, notify } from "../notifications/notifier";
 import { retryBuild } from "../commands/retryBuild";
 import { persistFailedBuilds } from "../state/failedBuildsPersistence";
 
-const DEFAULT_POLL_INTERVAL_MS = 3000;
-const MIN_POLL_INTERVAL_MS = 2000;
-const MAX_POLL_INTERVAL_MS = 5000;
+const DEFAULT_POLL_INTERVAL_MS = 5000;
+const MIN_POLL_INTERVAL_MS = 3000;
+const MAX_POLL_INTERVAL_MS = 15000;
 const POLL_ERROR_NOTIFICATION_COOLDOWN_MS = 30000;
 const MAX_IN_PROGRESS_AGE_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_MAX_CONCURRENT_STATUS_CHECKS = 6;
@@ -26,6 +26,7 @@ const CIRCUIT_BREAKER_BASE_BACKOFF_MS = 5000;
 const CIRCUIT_BREAKER_MAX_BACKOFF_MS = 5 * 60 * 1000;
 
 const ADAPTIVE_POLLING_CONFIG_KEY = "monitor.adaptivePolling";
+const POLL_INTERVAL_CONFIG_KEY = "monitor.pollIntervalMs";
 const MAX_CONCURRENT_STATUS_CHECKS_CONFIG_KEY = "monitor.maxConcurrentStatusChecks";
 const PERFORMANCE_DIAGNOSTICS_ENABLED_KEY = "performanceDiagnostics.enabled";
 
@@ -43,7 +44,7 @@ function formatSanitizedProjectScope(projectName: string, profile: string, regio
 }
 
 export class BuildMonitor implements vscode.Disposable {
-    private readonly pollIntervalMs: number;
+    private pollIntervalMs: number;
     private timer: NodeJS.Timeout | null = null;
     private currentPollIntervalMs: number | null = null;
     private isTickRunning = false;
@@ -62,14 +63,15 @@ export class BuildMonitor implements vscode.Disposable {
     constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly store: AppStore,
-        pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS
+        private readonly defaultPollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS
     ) {
-        this.pollIntervalMs = Math.max(MIN_POLL_INTERVAL_MS, Math.min(MAX_POLL_INTERVAL_MS, pollIntervalMs));
+        this.pollIntervalMs = this.clampPollIntervalMs(defaultPollIntervalMs);
         this.loadSettings();
 
         this.configurationSubscription = vscode.workspace.onDidChangeConfiguration((event) => {
             if (
                 event.affectsConfiguration(`codebuild.${ADAPTIVE_POLLING_CONFIG_KEY}`)
+                || event.affectsConfiguration(`codebuild.${POLL_INTERVAL_CONFIG_KEY}`)
                 || event.affectsConfiguration(`codebuild.${MAX_CONCURRENT_STATUS_CHECKS_CONFIG_KEY}`)
                 || event.affectsConfiguration(`codebuild.${PERFORMANCE_DIAGNOSTICS_ENABLED_KEY}`)
             ) {
@@ -98,11 +100,23 @@ export class BuildMonitor implements vscode.Disposable {
         this.stop();
     }
 
+    private clampPollIntervalMs(value: number): number {
+        return Math.max(MIN_POLL_INTERVAL_MS, Math.min(MAX_POLL_INTERVAL_MS, value));
+    }
+
     private loadSettings(): void {
         const config = vscode.workspace.getConfiguration("codebuild");
 
         this.adaptivePollingEnabled = config.get<boolean>(ADAPTIVE_POLLING_CONFIG_KEY, true);
         this.diagnosticsEnabled = config.get<boolean>(PERFORMANCE_DIAGNOSTICS_ENABLED_KEY, false);
+
+        const configuredPollIntervalMs = Number(config.get<number>(
+            POLL_INTERVAL_CONFIG_KEY,
+            this.defaultPollIntervalMs
+        ));
+        this.pollIntervalMs = Number.isFinite(configuredPollIntervalMs)
+            ? this.clampPollIntervalMs(configuredPollIntervalMs)
+            : this.clampPollIntervalMs(this.defaultPollIntervalMs);
 
         const configuredMaxChecks = Number(config.get<number>(
             MAX_CONCURRENT_STATUS_CHECKS_CONFIG_KEY,
@@ -147,11 +161,11 @@ export class BuildMonitor implements vscode.Disposable {
         }
 
         if (activeBuildCount <= 8) {
-            return Math.min(MAX_POLL_INTERVAL_MS, this.pollIntervalMs + 500);
+            return Math.min(MAX_POLL_INTERVAL_MS, this.pollIntervalMs + 1000);
         }
 
         if (activeBuildCount <= 20) {
-            return Math.min(MAX_POLL_INTERVAL_MS, this.pollIntervalMs + 1000);
+            return Math.min(MAX_POLL_INTERVAL_MS, this.pollIntervalMs + 3000);
         }
 
         return MAX_POLL_INTERVAL_MS;
