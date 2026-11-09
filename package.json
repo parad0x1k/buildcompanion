@@ -589,7 +589,7 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "tsc -p ./ && node esbuild.js --production",
+    "vscode:prepublish": "tsc -p ./ --noEmit && node esbuild.js --production",
     "compile": "tsc -p ./ && node esbuild.js",
     "watch": "tsc -watch -p ./",
     "watch:bundle": "node esbuild.js --watch",
@@ -599,9 +599,9 @@
     "package": "vsce package",
     "audit": "npm audit --omit=dev --audit-level=moderate",
     "audit:fix": "npm audit fix --omit=dev",
-    "audit:production": "npm audit --production",
-    "audit:production:json": "npm audit --production --json",
-    "audit:production:fix-dry-run": "npm audit fix --production --dry-run --json"
+    "audit:production": "npm audit --omit=dev",
+    "audit:production:json": "npm audit --omit=dev --json",
+    "audit:production:fix-dry-run": "npm audit fix --omit=dev --dry-run --json"
   },
   "author": "parad0x1k",
   "license": "MIT",

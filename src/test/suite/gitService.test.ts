@@ -87,5 +87,38 @@ describe("git/gitService", () => {
                 await fs.rm(tempDir, { recursive: true, force: true });
             }
         });
+
+        it("does not leak git's '+' (checked out in another worktree) marker into branch names", async function () {
+            this.timeout(20000);
+
+            const tempDir = await makeTempDir();
+            const worktreeDir = `${tempDir}-worktree`;
+            try {
+                await execFileAsync("git", ["init"], { cwd: tempDir });
+                await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
+                await execFileAsync("git", ["config", "user.name", "BuildCompanion Test"], { cwd: tempDir });
+                await execFileAsync("git", ["checkout", "-b", "main"], { cwd: tempDir });
+                await fs.writeFile(path.join(tempDir, "readme.txt"), "hello");
+                await execFileAsync("git", ["add", "-A"], { cwd: tempDir });
+                await execFileAsync("git", ["commit", "-m", "initial commit"], { cwd: tempDir });
+                await execFileAsync("git", ["branch", "feature/in-worktree"], { cwd: tempDir });
+                await execFileAsync("git", ["worktree", "add", worktreeDir, "feature/in-worktree"], { cwd: tempDir });
+
+                const suggestions = await getRecentGitBranchSuggestions(tempDir);
+
+                assert.equal(suggestions.currentBranch, "main");
+                assert.ok(suggestions.branches.includes("feature/in-worktree"));
+                assert.ok(suggestions.branches.every((name) => !/^[*+]/.test(name)));
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+                    this.skip();
+                    return;
+                }
+                throw error;
+            } finally {
+                await fs.rm(worktreeDir, { recursive: true, force: true });
+                await fs.rm(tempDir, { recursive: true, force: true });
+            }
+        });
     });
 });

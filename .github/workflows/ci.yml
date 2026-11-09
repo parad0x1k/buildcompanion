@@ -9,10 +9,18 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same PR makes the older run's result irrelevant; cancel it instead of
+# queuing a full xvfb + VS Code test run. Never cancel runs on main.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     name: Compile and audit
     runs-on: ubuntu-latest
+    # A hung VS Code download/launch would otherwise hold the runner for GitHub's 6-hour default.
+    timeout-minutes: 20
 
     steps:
       - name: Checkout

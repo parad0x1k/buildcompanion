@@ -197,10 +197,23 @@ export class BuildMonitor implements vscode.Disposable {
 
         this.currentPollIntervalMs = nextPollIntervalMs;
         this.timer = setInterval(() => {
-            void this.tick();
+            this.runTick();
         }, nextPollIntervalMs);
 
-        void this.tick();
+        this.runTick();
+    }
+
+    /**
+     * Fire-and-forget wrapper around tick(). tick() has a try/finally but no catch, so anything
+     * that throws inside it (a store update, a notification helper) would otherwise surface as an
+     * unhandled promise rejection from a bare `void this.tick()`.
+     */
+    private runTick(): void {
+        this.tick().catch((error: unknown) => {
+            logError(
+                `[BUILD] Build monitor tick failed: ${sanitizeLogValue(error instanceof Error ? error.message : String(error))}`
+            );
+        });
     }
 
     private shouldNotifyPollingError(buildId: string): boolean {
@@ -332,12 +345,12 @@ export class BuildMonitor implements vscode.Disposable {
             }
 
             // Lets the user restart the build directly from the notification, without opening Build History.
-            void notify("error", failureMessage, { actions: ["Retry Build"] }).then((selection) => {
+            void notify("error", failureMessage, { actions: ["Retry Build"] }).then(async (selection) => {
                 if (selection !== "Retry Build") {
                     return;
                 }
 
-                void retryBuild(this.context, this.store, {
+                await retryBuild(this.context, this.store, {
                     id: build.id,
                     projectName: build.projectName,
                     status: build.status,
@@ -345,6 +358,10 @@ export class BuildMonitor implements vscode.Disposable {
                     region: build.region,
                     sourceVersion: build.sourceVersion
                 });
+            }).catch((error: unknown) => {
+                logError(
+                    `[BUILD] Retry Build from failure notification failed: ${sanitizeLogValue(error instanceof Error ? error.message : String(error))}`
+                );
             });
         }
     }

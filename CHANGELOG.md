@@ -5,6 +5,10 @@ All notable changes to BuildCompanion for AWS CodeBuild are documented in this f
 ## [Unreleased]
 
 ### Fixed
+- Expired AWS client cache entries (older than the 5-minute TTL) were dropped from the cache without calling `destroy()`, leaving their keep-alive sockets open until they idled out. They are now destroyed on expiry, matching what eviction and `clearAwsClientCache()` already did.
+- Concurrent callers that all missed the AWS client cache (batch deploy, per-scope polling, parallel agent tool calls) each resolved credentials and built their own client; all but the last were overwritten in the cache and never destroyed. Creation is now single-flight per profile/region/FIPS key, so they share one client and one credential resolution.
+- Git branch suggestions showed a branch checked out in another linked worktree as `+ name` (git's marker leaked into the name), and a user-level `color.branch=always` would inject ANSI escapes into every name. The `+` marker is now stripped and `--no-color` is passed.
+- The build monitor's poll tick and the "Retry Build" action on the failure notification were fire-and-forget promises with no rejection handler, so any unexpected throw became an unhandled rejection. Both now log the failure to the output channel.
 - **Region persistence was silently broken**: the last-selected AWS region (`globalState` key `codebuild.currentRegion`) was never actually restored on startup. The store always initialized to the hard-coded default (`us-east-1`) *before* the persisted/profile-resolved region was computed, and the restore logic only applied that resolved region when the store's current region wasn't already a recognized one — which the hard-coded default always was. The persisted region is now seeded into the store before activation runs, so it is correctly retained across restarts.
 - **Slow/blocking startup**: `activate()` used to `await` all profile, project, and active-build discovery (real AWS calls) before creating the tree view or registering any command, so a slow network, cold credential resolution, or an SSO token refresh could leave the extension appearing to hang for well over the AWS call time itself, with no commands or tree view available at all — and a failure during that discovery aborted activation entirely, leaving the view/commands unregistered for the rest of the session. The tree view and all commands are now created immediately; profile/project/active-build discovery runs in the background and the tree fills in reactively as it completes. A failure now shows an error notification instead of leaving the extension non-functional.
 - Startup profile/project discovery and active-build reconciliation (`[REFRESH]`/`[RECONCILE]` output channel tags) now log a timed progress line on success, not just on failure, so a slow-but-succeeding activation is visible in the output channel instead of showing only the initial "BuildCompanion activated" line.
@@ -17,6 +21,7 @@ All notable changes to BuildCompanion for AWS CodeBuild are documented in this f
 - `startCodeBuild`, `retryBuild`, and `startCodeBuildWithOverrides` now generate and send a deterministic `idempotencyToken` on every `StartBuild`/`RetryBuild` call, so a genuine duplicate request (a client retry, a double-submitted confirmation) within AWS's 5-minute token-matching window collapses to a single build instead of starting two.
 - `engines.vscode` raised from `^1.85.0` to `^1.95.0`, the version that finalized VS Code's Language Model Tool API, required by the new agent tools described below.
 - Default auto-refresh polling is dialed back to reduce the chance of AWS CodeBuild API throttling: base interval raised from 3000ms to 5000ms, and the adaptive back-off for many concurrent active builds now scales up to 15000ms (was 5000ms) instead of maxing out early. The base interval is now configurable via the new `codebuild.monitor.pollIntervalMs` setting (default `5000`, range `3000`-`15000`).
+- `View Logs` no longer automatically shows/focuses the shared `BuildCompanion` output channel; logs still stream into it in the background for continuity, but the primary, focused surface is now the per-build log viewer document.
 
 ### Added
 - **AI agent tools (opt-in, off by default)**: four VS Code Language Model Tools that compatible AI agents (e.g. GitHub Copilot Chat agent mode) can discover and call, enabled via the new `codebuild.agentTools.enabled` setting:
@@ -48,10 +53,6 @@ All notable changes to BuildCompanion for AWS CodeBuild are documented in this f
 - Permission-denied error messages now name the specific IAM action(s) required for the failing operation when known (currently: retrying a build, and reading/updating project environment variables).
 - New setting `codebuild.logsViewer.maxLines` controlling the per-build log viewer's line-retention cap.
 - New setting `codebuild.logsViewer.maxFullLogLines` controlling the safety cap on total lines fetched by `View Full Log`.
-
-### Changed
-- `View Logs` no longer automatically shows/focuses the shared `BuildCompanion` output channel; logs still stream into it in the background for continuity, but the primary, focused surface is now the per-build log viewer document.
-- Startup profile/project discovery and active-build reconciliation (`[REFRESH]`/`[RECONCILE]` output channel tags) now log a timed progress line on success, not just on failure, so a slow-but-succeeding activation is visible in the output channel instead of showing only the initial "BuildCompanion activated" line.
 
 ## [0.1.1] — 2026-09-22
 

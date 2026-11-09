@@ -11,7 +11,9 @@ export type GitBranchSuggestions = {
 };
 
 function normalizeBranchLine(line: string): string {
-    return line.replace(/^\*\s*/, "").trim();
+    // `git branch` prefixes the checked-out branch with "*" and any branch checked out in another
+    // linked worktree with "+"; strip both so the marker never leaks into a branch name.
+    return line.replace(/^[*+]\s*/, "").trim();
 }
 
 function parseGitBranchOutput(stdout: string): { branches: string[]; currentBranch?: string } {
@@ -55,7 +57,9 @@ export async function getRecentGitBranchSuggestions(
     const normalizedLimit = Math.max(1, limit);
 
     try {
-        const { stdout } = await execFileAsync("git", ["branch", "--sort=-committerdate"], {
+        // --no-color: a user's `color.branch=always` would otherwise inject ANSI escapes into the
+        // piped output and corrupt every branch name.
+        const { stdout } = await execFileAsync("git", ["branch", "--no-color", "--sort=-committerdate"], {
             cwd: effectiveCwd,
             timeout: 5000,
             maxBuffer: 1024 * 1024
