@@ -57,9 +57,9 @@ export async function getRecentGitBranchSuggestions(
     const normalizedLimit = Math.max(1, limit);
 
     try {
-        // --no-color: a user's `color.branch=always` would otherwise inject ANSI escapes into the
-        // piped output and corrupt every branch name.
-        const { stdout } = await execFileAsync("git", ["branch", "--no-color", "--sort=-committerdate"], {
+        // --no-color / --no-column: a user's `color.branch=always` or `column.ui=always` would
+        // otherwise inject ANSI escapes or pack several names onto one line in the piped output.
+        const { stdout } = await execFileAsync("git", ["branch", "--no-color", "--no-column", "--sort=-committerdate"], {
             cwd: effectiveCwd,
             timeout: 5000,
             maxBuffer: 1024 * 1024

@@ -10,9 +10,10 @@ permissions:
   contents: read
 
 # A newer push to the same PR makes the older run's result irrelevant; cancel it instead of
-# queuing a full xvfb + VS Code test run. Never cancel runs on main.
+# queuing a full xvfb + VS Code test run. Runs on other refs (e.g. main) get a unique group so they
+# are neither cancelled nor replaced while queued.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

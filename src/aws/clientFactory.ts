@@ -8,6 +8,11 @@ import { resolveAwsCredentials } from "./credentials";
 const MAX_CLIENT_CACHE_SIZE = 16;
 const CLIENT_CACHE_TTL_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 30_000;
+// How long a client that left the cache (TTL expiry, LRU eviction, replacement) stays usable before
+// its sockets are closed. destroy() tears down every socket on the client's agent, including ones
+// mid-request, and callers such as log tailing hold a single client for an entire build. Waiting
+// two request timeouts lets anything already in flight finish or time out first.
+const RETIRED_CLIENT_GRACE_MS = REQUEST_TIMEOUT_MS * 2;
 
 type ClientCacheEntry<TClient> = {
     client: TClient;
@@ -23,6 +28,11 @@ const cloudWatchLogsClientCache = new Map<string, ClientCacheEntry<CloudWatchLog
 // one but the last to finish is then silently overwritten in the cache and never destroyed.
 const codeBuildInFlight = new Map<string, Promise<CodeBuildClient>>();
 const cloudWatchLogsInFlight = new Map<string, Promise<CloudWatchLogsClient>>();
+
+// Bumped by clearAwsClientCache(). A creation that started before a clear may finish after it; it
+// must not write its (possibly stale-credential) client into the freshly cleared cache, where it
+// would also overwrite a newer client and leak it.
+let cacheGeneration = 0;
 
 export type CreateCodeBuildClientOptions = {
     secretStorage?: vscode.SecretStorage;
@@ -62,8 +72,8 @@ function getCachedClient<TClient>(
 
     if (Date.now() - cached.createdAtMs > CLIENT_CACHE_TTL_MS) {
         cache.delete(key);
-        // Close the expired client's keep-alive sockets instead of leaving them to idle out.
-        destroyClientIfPossible(cached.client);
+        // Close the expired client's keep-alive sockets, but only after in-flight requests are done.
+        retireClient(cached.client);
         return undefined;
     }
 
@@ -81,11 +91,22 @@ function destroyClientIfPossible<TClient>(client: TClient): void {
     }
 }
 
+function retireClient<TClient>(client: TClient): void {
+    const timer = setTimeout(() => destroyClientIfPossible(client), RETIRED_CLIENT_GRACE_MS);
+    // Never keep the extension host alive just to close sockets; they die with the process anyway.
+    timer.unref?.();
+}
+
 function setCachedClient<TClient>(
     cache: Map<string, ClientCacheEntry<TClient>>,
     key: string,
     client: TClient
 ): void {
+    const replaced = cache.get(key);
+    if (replaced && replaced.client !== client) {
+        retireClient(replaced.client);
+    }
+
     cache.set(key, {
         client,
         createdAtMs: Date.now()
@@ -101,12 +122,15 @@ function setCachedClient<TClient>(
         const evicted = cache.get(oldestKey);
         cache.delete(oldestKey);
         if (evicted) {
-            destroyClientIfPossible(evicted.client);
+            retireClient(evicted.client);
         }
     }
 }
 
 export function clearAwsClientCache(): void {
+    // Explicit clears (credentials changed, extension deactivating) close sockets immediately.
+    cacheGeneration += 1;
+
     for (const entry of codeBuildClientCache.values()) {
         destroyClientIfPossible(entry.client);
     }
@@ -151,13 +175,20 @@ async function getOrCreateClient<TClient>(
         return pending;
     }
 
+    const generation = cacheGeneration;
     const creation = (async () => {
         const credentials = await resolveAwsCredentials(profile, {
             secretStorage: options?.secretStorage
         });
 
         const client = create({ region, credentials, useFips });
-        setCachedClient(cache, cacheKey, client);
+        if (generation === cacheGeneration) {
+            setCachedClient(cache, cacheKey, client);
+        } else {
+            // The cache was cleared while credentials were resolving. Hand this client to the
+            // callers that asked before the clear, but keep it out of the cache and close it later.
+            retireClient(client);
+        }
         return client;
     })();
 
