@@ -143,7 +143,7 @@ No additional IAM permissions are required beyond what the equivalent tree-view 
 
 #### `editor/title`
 
-- `codebuild.viewFullLogs`: `resourceScheme == codebuild-logs` — shown as a toolbar button on any open per-build log viewer tab (tailing or full), so the entire log can be loaded without going back to the tree.
+- `codebuild.viewFullLogs`: `activeWebviewPanelId == 'codebuild.buildLogs'` — shown as a toolbar button on any focused build log panel (live or full), so the entire log can be loaded without going back to the tree.
 
 #### `view/title` (toolbar)
 
@@ -211,6 +211,7 @@ Checkbox behavior:
 - History row label format: `<sourceVersion> (<initiator>)`.
 - Status shown in the tooltip is a human-readable label (e.g. `Succeeded`, `Timed Out`) via `formatBuildStatusLabel`.
 - The completion time shown in the row description and tooltip (`Completed:`/`Failed:`/`Stopped:`/`Updated:`) honors the Local/UTC toggle and always includes an explicit timezone abbreviation (e.g. `IST`, `UTC`) so it's unambiguous which one is displayed.
+- The row description also shows how long the build ran (`took 4m 12s`), and the tooltip has a `Duration:` line. The duration comes from AWS's `startTime`/`endTime` for the build; it reads `unavailable` when AWS hasn't reported an end time yet.
 - Completed and historical build rows also expose a `View Full Log` inline action (`codebuild.viewFullLogs`) alongside `Retry Build` and `View Logs`.
 
 ### Failed Builds Section
@@ -220,7 +221,7 @@ Checkbox behavior:
 - Capped at the 10 most recent entries per profile + region scope (oldest trimmed first); persisted across VS Code restarts (`globalState`).
 - An entry is automatically removed once that project's next build succeeds, regardless of how that later build was triggered.
 - Each row exposes `Retry Build`, `View Logs`, and `Dismiss Failed Build` inline actions. A `Clear Failed Builds` toolbar button (shown only when the current scope has entries) clears the whole scoped list.
-- Row label format: `<projectName> • <branch>`; description shows status and failure time (honoring the Local/UTC toggle).
+- Row label format: `<projectName> • <branch>`; description shows status, failure time (honoring the Local/UTC toggle), and how long the build ran before failing (`after 3m 5s`), which is also in the tooltip as `Ran for:`. Entries recorded by older versions have no duration and show `unavailable`.
 
 ## Authentication and Credential Handling
 
@@ -462,24 +463,27 @@ Invalid when branch:
 
 ## Log Streaming and Failure Extraction
 
-### Per-Build Log Viewer
+### Build Log Panel
 
-- `codebuild.viewLogs` opens a dedicated, read-only virtual document (`codebuild-logs:` URI scheme) in a new editor tab beside the current editor (`vscode.ViewColumn.Beside`), instead of only relying on the shared output channel.
-- The document has no backing `FileSystemProvider`, so VS Code treats it as read-only automatically; it still supports scrolling, Find, minimap, and can be dragged into its own window like any editor tab.
-- Streamed lines are pushed to the viewer once per CloudWatch poll response (not per line), which naturally batches bursts; additional internal throttling coalesces rapid updates into at most one document refresh every 300 ms.
-- The viewer retains at most `codebuild.logsViewer.maxLines` lines (default `10000`, minimum `500`); once exceeded, the oldest lines are dropped and a truncation notice is shown.
-- Re-opening logs for the same build resets the viewer to a fresh buffer; closing the viewer tab aborts that build's log stream (via `AbortController`) so no further CloudWatch API calls are made for it.
+- `codebuild.viewLogs` opens a dedicated webview panel per build (`viewType` `codebuild.buildLogs`, implemented in `src/ui/buildLogsPanel.ts`), instead of only relying on the shared output channel.
+- By default (`codebuild.logsViewer.openIn: "editor"`) the panel opens as a tab beside the current editor. Its `Pop out` button moves it into its own floating window via VS Code's `workbench.action.moveEditorToNewWindow`; the button is hidden once the panel is in its own window, so it can't spawn a second one. Set the option to `"window"` to have every panel open directly in its own window. If the host can't open auxiliary windows the panel stays a normal tab.
+- The panel shows a header card (project, mode badge, live status, build ID, profile/region, retention countdown) and a toolbar: a line filter with match count, `Follow` (keep the newest line in view; turns off when you scroll up, with a `Jump to latest` button), `Wrap`, `Errors` (only error/warning lines), `Full log`, `Copy`, `Pop out`, and `Reload`. Error, warning, and CodeBuild phase lines are colored. `Ctrl+F` find also works.
+- Log text only ever reaches the webview DOM via `textContent` under a nonce-based Content-Security-Policy, so nothing a build prints can run in the panel.
+- Streamed lines are pushed to the panel once per CloudWatch poll response (not per line), and further coalesced into at most one webview message every 150 ms. No webview exists until logs are first opened, so activation cost is unchanged.
+- The panel retains at most `codebuild.logsViewer.maxLines` lines (default `10000`, minimum `500`); once exceeded, the oldest lines are dropped and a truncation notice is shown.
+- **Retention TTL (`codebuild.logsViewer.ttlMinutes`, default `15`)**: once a stream ends (build finished, full log loaded, streaming stopped or failed), its lines are kept for the TTL and then dropped from memory; an open panel then shows an "expired" notice with a `Reload logs` button. The TTL counts from the end of the stream, never from its start, so long builds are not cut off.
+- Re-opening logs for a build that is still streaming, or that finished within the TTL, just reveals the existing panel (or re-creates it from the cached lines if it was closed) without refetching. Otherwise (stopped, failed, expired) it starts a fresh stream. Closing a panel that is still streaming aborts that build's log stream (via `AbortController`) and drops its lines immediately, so no further CloudWatch API calls are made for it.
+- When a build fails, the panel's final banner includes the extracted failure summary.
 - The same log lines are still written to the shared `BuildCompanion` output channel (unchanged behavior); the output channel is no longer force-shown/focused when logs are opened.
 - Before display (and before being written to the output channel), every log message is sanitized via `sanitizeLogMessageForDisplay`: ANSI color/cursor escape codes are stripped, carriage-return progress-bar overwrites (e.g. `docker pull`, `npm`, `pip` progress bars) are collapsed to their final rendered line, and any other stray C0 control character is dropped (tabs are preserved). This prevents colorized/progress-reporting build tool output from rendering as unreadable control-character glyphs.
 
 ### Full Log Snapshot (`codebuild.viewFullLogs`)
 
-- Available as an editor-title toolbar button on any open per-build log viewer tab (`resourceScheme == codebuild-logs`), and as a `View Full Log` inline action on Build History / Active Builds rows; resolves its target build either from the tree selection or from the currently active log viewer tab's stored header metadata.
-- Opens a second, independent read-only document (same `codebuild-logs:` scheme, distinguished by a `.full.log` path suffix) so the original tailing viewer is left untouched — the default "tail" viewing experience is unchanged.
+- Available as the `Full log` button in a live log panel, as an editor-title toolbar button on any focused log panel (`activeWebviewPanelId == 'codebuild.buildLogs'`), and as a `View Full Log` inline action on Build History / Active Builds rows; resolves its target build either from the tree selection or from the currently focused log panel.
+- Opens a second, independent panel (marked with a `Full log` badge) so the live panel is left untouched. It follows the same retention TTL and reuse rules as the live panel.
 - Fetches the build's entire available CloudWatch log history from the beginning (`GetLogEvents` with `startFromHead: true`), paginating until it catches up to the latest data, instead of only the recent tail. For a still-running build this returns a snapshot of everything emitted so far (it does not keep polling for new data afterward).
-- Runs under a cancellable `vscode.window.withProgress` notification that reports cumulative lines fetched; the viewer document fills in incrementally as each page arrives rather than appearing only once the fetch completes.
-- This document is unbounded: unlike the tailing viewer, it is not subject to `codebuild.logsViewer.maxLines`. Instead, the fetch itself is capped at `codebuild.logsViewer.maxFullLogLines` (default `50000`, minimum `1000`) as a safety limit; if reached, the footer explicitly states the log was truncated and names the setting to increase.
-- The header of a full-log document is marked `BuildCompanion — Build Logs (Full Log)` with an additional `Mode:` line, so it's visually distinguishable from the tailing viewer's header.
+- Runs under a cancellable `vscode.window.withProgress` notification that reports cumulative lines fetched; the panel fills in incrementally as each page arrives rather than appearing only once the fetch completes.
+- This panel is unbounded: unlike the live panel, it is not subject to `codebuild.logsViewer.maxLines`. Instead, the fetch itself is capped at `codebuild.logsViewer.maxFullLogLines` (default `50000`, minimum `1000`) as a safety limit; if reached, the final banner explicitly states the log was truncated and names the setting to increase.
 
 Log streaming (`streamBuildLogs`) details:
 

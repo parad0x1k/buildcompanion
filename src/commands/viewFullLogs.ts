@@ -11,11 +11,7 @@ import {
     resolveProjectNameFromArg,
     sanitizeBuildId
 } from "./shared";
-import {
-    BUILD_LOGS_URI_SCHEME,
-    buildFullLogsDocumentUri,
-    getBuildLogsDocumentProvider
-} from "../ui/buildLogsViewer";
+import { getBuildLogsPanelManager, type BuildLogsOpenResult } from "../ui/buildLogsPanel";
 
 type ResolvedLogTarget = {
     profile: string;
@@ -25,16 +21,11 @@ type ResolvedLogTarget = {
 };
 
 /**
- * Falls back to whichever build the user currently has open in a (tailing) log viewer tab, so
- * the "View Full Log" editor-title button works without needing a tree selection argument.
+ * Falls back to whichever build the user currently has focused in a log panel, so the
+ * "View Full Log" editor-title button works without needing a tree selection argument.
  */
-function resolveFromActiveLogEditor(): ResolvedLogTarget | undefined {
-    const activeUri = vscode.window.activeTextEditor?.document.uri;
-    if (!activeUri || activeUri.scheme !== BUILD_LOGS_URI_SCHEME) {
-        return undefined;
-    }
-
-    const header = getBuildLogsDocumentProvider().getHeader(activeUri);
+function resolveFromActiveLogPanel(): ResolvedLogTarget | undefined {
+    const header = getBuildLogsPanelManager().getActiveHeader();
     if (!header) {
         return undefined;
     }
@@ -54,7 +45,7 @@ export async function viewFullLogs(
 ): Promise<void> {
     const state = store.getState();
     const selectedBuild = resolveBuildFromArg(arg);
-    const fromActiveEditor = selectedBuild ? undefined : resolveFromActiveLogEditor();
+    const fromActiveEditor = selectedBuild ? undefined : resolveFromActiveLogPanel();
 
     let profile = selectedBuild?.profile ?? fromActiveEditor?.profile ?? state.currentProfile;
     let region = selectedBuild?.region ?? fromActiveEditor?.region ?? state.currentRegion;
@@ -104,27 +95,32 @@ export async function viewFullLogs(
     const resolvedBuildId = buildId;
     const resolvedProjectName = projectName ?? "unknown-project";
 
-    const provider = getBuildLogsDocumentProvider();
-    const uri = buildFullLogsDocumentUri(resolvedProfile, resolvedRegion, resolvedBuildId);
-    provider.open(
-        uri,
-        { projectName: resolvedProjectName, profile: resolvedProfile, region: resolvedRegion, buildId: resolvedBuildId, mode: "full" },
-        { unbounded: true }
-    );
-
+    let session: BuildLogsOpenResult;
     try {
-        const document = await vscode.workspace.openTextDocument(uri);
-        await vscode.window.showTextDocument(document, {
-            preview: false,
-            viewColumn: vscode.ViewColumn.Beside
-        });
+        session = await getBuildLogsPanelManager().open(
+            {
+                projectName: resolvedProjectName,
+                profile: resolvedProfile,
+                region: resolvedRegion,
+                buildId: resolvedBuildId,
+                mode: "full"
+            },
+            { unbounded: true }
+        );
     } catch (error) {
-        logError(`[LOGS] Failed to open full log viewer document: ${sanitizeLogValue(String(error))}`);
+        logError(`[LOGS] Failed to open full log panel: ${sanitizeLogValue(String(error))}`);
+        void notify("error", `Unable to open the full log for ${resolvedBuildId} in ${formatScope(resolvedProfile, resolvedRegion)}`);
         return;
     }
 
+    // Already loading, or loaded within the retention window: the panel was just revealed.
+    if (session.reused) {
+        return;
+    }
+
+    const { handle } = session;
     const abortController = new AbortController();
-    provider.registerCanceller(uri, () => abortController.abort());
+    handle.registerCanceller(() => abortController.abort());
 
     await vscode.window.withProgress(
         {
@@ -139,19 +135,20 @@ export async function viewFullLogs(
                 const result = await fetchFullBuildLog(resolvedProfile, resolvedRegion, resolvedBuildId, {
                     secretStorage: context.secrets,
                     signal: abortController.signal,
-                    onLines: (lines) => provider.appendLines(uri, lines),
+                    onLines: (lines) => handle.appendLines(lines),
                     onProgress: (totalLines) => progress.report({ message: `${totalLines} line(s) fetched…` })
                 });
 
-                provider.setFooter(
-                    uri,
+                handle.finish(
+                    "complete",
                     result.truncated
-                        ? `── Full log truncated after ${result.totalLines} line(s) (safety limit reached). Increase "codebuild.logsViewer.maxFullLogLines" to see more. Build status: ${result.status} ──`
-                        : `── End of full log (${result.totalLines} line(s)). Build status: ${result.status} ──`
+                        ? `Full log truncated after ${result.totalLines} line(s) (safety limit reached). Increase "codebuild.logsViewer.maxFullLogLines" to see more. Build status: ${result.status}.`
+                        : `End of full log (${result.totalLines} line(s)). Build status: ${result.status}.`,
+                    result.status
                 );
             } catch (error) {
                 if (isLogStreamingCancellationError(error)) {
-                    provider.setFooter(uri, "── Full log loading cancelled ──");
+                    handle.finish("stopped", "Full log loading cancelled.");
                     return;
                 }
 
@@ -162,7 +159,7 @@ export async function viewFullLogs(
                 });
 
                 logError(`[LOGS] Full log fetch failed in ${formatSanitizedScope(resolvedProfile, resolvedRegion)}: ${sanitizeLogValue(message)}`);
-                provider.setFooter(uri, `── Failed to load full log ──\n${message}`);
+                handle.finish("failed", `Failed to load the full log.\n${message}`);
                 void notify("error", `Failed to load full log for ${resolvedBuildId} in ${formatScope(resolvedProfile, resolvedRegion)}`);
             }
         }

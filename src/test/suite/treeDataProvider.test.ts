@@ -63,4 +63,82 @@ describe("ui/treeDataProvider", () => {
             }
         });
     });
+
+    describe("build duration display", () => {
+        it("shows how long a history build took in its description and tooltip", () => {
+            const store = createAppStore({ currentProfile: "dev", buildTimeDisplayFormat: "utc" });
+            const provider = new CodeBuildTreeDataProvider(store, async () => undefined);
+            try {
+                const item = provider.getTreeItem({
+                    kind: "historyBuild",
+                    build: {
+                        id: "demo:1",
+                        projectName: "demo",
+                        status: "SUCCEEDED",
+                        profile: "dev",
+                        region: "us-east-1",
+                        initiator: "alice",
+                        sourceVersion: "main",
+                        startedAt: "2026-01-01T00:00:00.000Z",
+                        endedAt: "2026-01-01T00:04:12.000Z",
+                        durationSeconds: 252
+                    }
+                });
+
+                assert.match(String(item.description), /^Completed: .+ • took 4m 12s$/);
+                assert.match(String(item.tooltip), /Duration: 4m 12s/);
+            } finally {
+                provider.dispose();
+            }
+        });
+
+        it("marks the duration unavailable for a history build without an end time", () => {
+            const store = createAppStore({ currentProfile: "dev" });
+            const provider = new CodeBuildTreeDataProvider(store, async () => undefined);
+            try {
+                const item = provider.getTreeItem({
+                    kind: "historyBuild",
+                    build: {
+                        id: "demo:2",
+                        projectName: "demo",
+                        status: "IN_PROGRESS",
+                        profile: "dev",
+                        region: "us-east-1",
+                        initiator: "alice",
+                        sourceVersion: "main",
+                        startedAt: "2026-01-01T00:00:00.000Z"
+                    }
+                });
+
+                assert.equal(item.description, undefined);
+                assert.match(String(item.tooltip), /Duration: unavailable/);
+            } finally {
+                provider.dispose();
+            }
+        });
+
+        it("shows how long a failed build ran before failing", () => {
+            const store = createAppStore({ currentProfile: "dev", buildTimeDisplayFormat: "utc" });
+            const provider = new CodeBuildTreeDataProvider(store, async () => undefined);
+            try {
+                const item = provider.getTreeItem({
+                    kind: "failedBuild",
+                    build: {
+                        id: "demo:3",
+                        projectName: "demo",
+                        status: "FAILED",
+                        profile: "dev",
+                        region: "us-east-1",
+                        failedAt: "2026-01-01T00:03:05.000Z",
+                        durationSeconds: 185
+                    }
+                });
+
+                assert.match(String(item.description), /after 3m 5s$/);
+                assert.match(String(item.tooltip), /Ran for: 3m 5s/);
+            } finally {
+                provider.dispose();
+            }
+        });
+    });
 });

@@ -91,6 +91,8 @@ export interface FailedBuildEntry {
     region: string;
     sourceVersion?: string;
     failedAt: string;
+    /** How long the build ran before failing, when its start time was known. */
+    durationSeconds?: number;
 }
 
 export interface AppState {

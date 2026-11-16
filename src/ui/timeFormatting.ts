@@ -46,6 +46,61 @@ function getLocalFormatter(localTimeZoneOverride: string | undefined): Intl.Date
 }
 
 /**
+ * Formats an elapsed time as a compact "1h 2m 3s" style string, omitting zero-valued trailing
+ * units ("5m", "1h 5s"). Returns `undefined` for a missing or non-finite value so callers can
+ * decide their own placeholder text.
+ */
+export function formatElapsed(totalSeconds: number | undefined): string | undefined {
+    if (totalSeconds === undefined || !Number.isFinite(totalSeconds)) {
+        return undefined;
+    }
+
+    const whole = Math.max(0, Math.floor(totalSeconds));
+    const hours = Math.floor(whole / 3600);
+    const minutes = Math.floor((whole % 3600) / 60);
+    const seconds = whole % 60;
+
+    const parts: string[] = [];
+    if (hours > 0) {
+        parts.push(`${hours}h`);
+    }
+    if (minutes > 0) {
+        parts.push(`${minutes}m`);
+    }
+    if (seconds > 0 || parts.length === 0) {
+        parts.push(`${seconds}s`);
+    }
+
+    return parts.join(" ");
+}
+
+/**
+ * How long a build ran, in seconds. Prefers the precomputed `durationSeconds` and otherwise
+ * derives it from the start/end timestamps; `undefined` when neither is usable.
+ */
+export function resolveBuildDurationSeconds(build: {
+    durationSeconds?: number;
+    startedAt?: string;
+    endedAt?: string;
+}): number | undefined {
+    if (build.durationSeconds !== undefined && Number.isFinite(build.durationSeconds) && build.durationSeconds >= 0) {
+        return build.durationSeconds;
+    }
+
+    if (!build.startedAt || !build.endedAt) {
+        return undefined;
+    }
+
+    const startedAtMs = new Date(build.startedAt).getTime();
+    const endedAtMs = new Date(build.endedAt).getTime();
+    if (!Number.isFinite(startedAtMs) || !Number.isFinite(endedAtMs) || endedAtMs < startedAtMs) {
+        return undefined;
+    }
+
+    return Math.round((endedAtMs - startedAtMs) / 1000);
+}
+
+/**
  * Formats an ISO 8601 build timestamp for display, honoring the user's Local/UTC toggle.
  * Both modes include an explicit zone abbreviation/offset (e.g. "IST", "UTC") so it's always
  * clear which one is shown. Returns `undefined` for an empty/missing value, and falls back to

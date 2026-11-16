@@ -66,7 +66,8 @@ What is covered:
   no real AWS calls, no real credentials needed.
 - `src/git/gitService.ts` against real temporary git repositories (and the "not a repository" fallback
   path); skips gracefully if `git` is unavailable on the machine running the tests.
-- `src/ui/buildLogsViewer.ts`'s update-throttling and line-retention-cap behavior directly.
+- `src/ui/buildLogsPanel.ts`'s session lifecycle directly: line-retention cap, reuse vs. restart on re-open,
+  stale-handle isolation, and the retention TTL (with a millisecond TTL injected through the manager options).
 - Command registration: `registerCodeBuildCommands` is exercised against a fake
   `vscode.ExtensionContext`, with `src/aws/profileManager.ts` and `src/aws/codebuildService.ts` stubbed via
   Sinon so activation never touches the host machine's real AWS configuration or network.

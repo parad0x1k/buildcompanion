@@ -332,6 +332,12 @@ export class BuildMonitor implements vscode.Disposable {
             );
 
             if (wasExtensionTriggered) {
+                const failedAt = new Date();
+                const startedAtMs = build.startTime ? new Date(build.startTime).getTime() : Number.NaN;
+                const durationSeconds = Number.isFinite(startedAtMs) && failedAt.getTime() >= startedAtMs
+                    ? Math.round((failedAt.getTime() - startedAtMs) / 1000)
+                    : undefined;
+
                 this.store.addFailedBuild({
                     id: build.id,
                     projectName: build.projectName,
@@ -339,7 +345,8 @@ export class BuildMonitor implements vscode.Disposable {
                     profile: build.profile,
                     region: build.region,
                     sourceVersion: build.sourceVersion,
-                    failedAt: new Date().toISOString()
+                    failedAt: failedAt.toISOString(),
+                    durationSeconds
                 });
                 void persistFailedBuilds(this.context, this.store.getState().failedBuilds);
             }

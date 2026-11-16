@@ -12,7 +12,7 @@ import { getConfiguredMaxBatchSelectedProjects } from "./aws/batchTriggerManager
 import { registerAgentTools } from "./agent/registerAgentTools";
 import { logInfo, disposeOutputChannel } from "./logging/outputChannelManager";
 import { formatScope, notify } from "./notifications/notifier";
-import { registerBuildLogsDocumentProvider } from "./ui/buildLogsViewer";
+import { registerBuildLogsPanels } from "./ui/buildLogsPanel";
 
 let activeBuildMonitor: BuildMonitor | null = null;
 
@@ -94,7 +94,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(treeDataProvider, treeView, checkboxStateSubscription);
 
-    registerBuildLogsDocumentProvider(context);
+    // Only registers a dispose hook; no webview is created until logs are first opened.
+    registerBuildLogsPanels(context);
 
     activeBuildMonitor?.dispose();
     activeBuildMonitor = new BuildMonitor(context, store);

@@ -3,7 +3,7 @@ import { filterProjectsBySearch } from "../state/store";
 import type { AppStore, BuildHistoryEntry, BuildState, BuildTimeDisplayFormat, FailedBuildEntry, Project } from "../state/store";
 import { logError, sanitizeLogValue } from "../logging/outputChannelManager";
 import { formatBuildStatusLabel } from "./statusLabels";
-import { formatBuildTimestamp } from "./timeFormatting";
+import { formatBuildTimestamp, formatElapsed, resolveBuildDurationSeconds } from "./timeFormatting";
 
 type RootNodeKind =
     | "settingsSection"
@@ -229,23 +229,7 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
     }
 
     private formatDuration(ms?: number): string {
-        if (ms === undefined) {
-            return "Duration unavailable";
-        }
-
-        const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = totalSeconds % 60;
-
-        if (minutes === 0) {
-            return `${seconds}s`;
-        }
-
-        if (seconds === 0) {
-            return `${minutes}m`;
-        }
-
-        return `${minutes}m ${seconds}s`;
+        return formatElapsed(ms === undefined ? undefined : ms / 1000) ?? "Duration unavailable";
     }
 
     public getTreeItem(element: TreeNode): vscode.TreeItem {
@@ -439,18 +423,22 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                 const branch = element.build.sourceVersion?.trim() || "unknown";
                 const initiator = element.build.initiator?.trim() || "unknown";
                 const completionLabel = this.formatHistoryCompletionLabel(element.build, state.buildTimeDisplayFormat);
+                const durationText = formatElapsed(resolveBuildDurationSeconds(element.build));
                 const item = new vscode.TreeItem(
                     `${branch} (${initiator})`,
                     vscode.TreeItemCollapsibleState.None
                 );
-                item.description = completionLabel;
+                item.description = [completionLabel, durationText ? `took ${durationText}` : undefined]
+                    .filter((part): part is string => part !== undefined)
+                    .join(" • ") || undefined;
                 item.iconPath = this.getStatusIcon(element.build.status, "historyBuild");
                 item.tooltip = [
                     `Build ID: ${element.build.id}`,
                     `Branch: ${branch}`,
                     `Triggered by: ${initiator}`,
                     `Status: ${formatBuildStatusLabel(element.build.status)}`,
-                    completionLabel ?? "Completed/failed time: unavailable"
+                    completionLabel ?? "Completed/failed time: unavailable",
+                    `Duration: ${durationText ?? "unavailable"}`
                 ].join("\n");
                 item.contextValue = "build";
                 item.id = `codebuild.historyBuild.${element.build.id}`;
@@ -493,7 +481,10 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                     `${element.build.projectName} • ${branch}`,
                     vscode.TreeItemCollapsibleState.None
                 );
-                item.description = failedAtText ? `${statusLabel} • ${failedAtText}` : statusLabel;
+                const failedDurationText = formatElapsed(element.build.durationSeconds);
+                item.description = [statusLabel, failedAtText, failedDurationText ? `after ${failedDurationText}` : undefined]
+                    .filter((part): part is string => part !== undefined)
+                    .join(" • ");
                 item.iconPath = this.getStatusIcon(element.build.status, "historyBuild");
                 item.tooltip = [
                     `Project: ${element.build.projectName}`,
@@ -502,7 +493,8 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                     `Branch: ${branch}`,
                     `Status: ${statusLabel}`,
                     `Build ID: ${element.build.id}`,
-                    failedAtText ? `Failed: ${failedAtText}` : "Failed time unavailable"
+                    failedAtText ? `Failed: ${failedAtText}` : "Failed time unavailable",
+                    `Ran for: ${failedDurationText ?? "unavailable"}`
                 ].join("\n");
                 item.contextValue = "failedBuild";
                 item.id = `codebuild.failedBuild.${element.build.id}`;

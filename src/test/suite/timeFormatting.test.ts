@@ -1,7 +1,56 @@
 import * as assert from "node:assert/strict";
-import { formatBuildTimestamp } from "../../ui/timeFormatting";
+import { formatBuildTimestamp, formatElapsed, resolveBuildDurationSeconds } from "../../ui/timeFormatting";
 
 describe("ui/timeFormatting", () => {
+    describe("formatElapsed", () => {
+        it("returns undefined for missing or non-finite input", () => {
+            assert.equal(formatElapsed(undefined), undefined);
+            assert.equal(formatElapsed(Number.NaN), undefined);
+            assert.equal(formatElapsed(Number.POSITIVE_INFINITY), undefined);
+        });
+
+        it("formats seconds, minutes and hours, omitting zero units", () => {
+            assert.equal(formatElapsed(0), "0s");
+            assert.equal(formatElapsed(42), "42s");
+            assert.equal(formatElapsed(300), "5m");
+            assert.equal(formatElapsed(252), "4m 12s");
+            assert.equal(formatElapsed(3600), "1h");
+            assert.equal(formatElapsed(3605), "1h 5s");
+            assert.equal(formatElapsed(4503), "1h 15m 3s");
+        });
+
+        it("floors fractional seconds and clamps negatives to zero", () => {
+            assert.equal(formatElapsed(59.9), "59s");
+            assert.equal(formatElapsed(-5), "0s");
+        });
+    });
+
+    describe("resolveBuildDurationSeconds", () => {
+        it("prefers an explicit durationSeconds", () => {
+            assert.equal(resolveBuildDurationSeconds({
+                durationSeconds: 90,
+                startedAt: "2026-01-01T00:00:00.000Z",
+                endedAt: "2026-01-01T01:00:00.000Z"
+            }), 90);
+        });
+
+        it("derives the duration from start/end timestamps when not precomputed", () => {
+            assert.equal(resolveBuildDurationSeconds({
+                startedAt: "2026-01-01T00:00:00.000Z",
+                endedAt: "2026-01-01T00:04:12.400Z"
+            }), 252);
+        });
+
+        it("returns undefined when an end time is missing, unparseable, or before the start", () => {
+            assert.equal(resolveBuildDurationSeconds({ startedAt: "2026-01-01T00:00:00.000Z" }), undefined);
+            assert.equal(resolveBuildDurationSeconds({ startedAt: "nope", endedAt: "2026-01-01T00:00:00.000Z" }), undefined);
+            assert.equal(resolveBuildDurationSeconds({
+                startedAt: "2026-01-01T00:05:00.000Z",
+                endedAt: "2026-01-01T00:00:00.000Z"
+            }), undefined);
+        });
+    });
+
     describe("formatBuildTimestamp", () => {
         it("returns undefined for an empty/missing value", () => {
             assert.equal(formatBuildTimestamp(undefined, "local"), undefined);
