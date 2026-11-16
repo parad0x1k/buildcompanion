@@ -34,6 +34,7 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
     private readonly loadingHistoryKeys = new Set<string>();
     private lastCanSelectMultipleProjects: boolean | undefined;
     private lastHasSavedBranches: boolean | undefined;
+    private lastHasSelectedProjects: boolean | undefined;
     private lastHasFailedBuilds: boolean | undefined;
     private disposed = false;
     private projectVisibilityCache:
@@ -128,6 +129,14 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
         if (this.lastCanSelectMultipleProjects !== canSelectVisibleProjects) {
             this.lastCanSelectMultipleProjects = canSelectVisibleProjects;
             void vscode.commands.executeCommand("setContext", "codebuild.canSelectMultipleProjects", canSelectVisibleProjects);
+        }
+
+        const hasSelectedProjects = state.currentProfile
+            ? this.store.getSelectedProjects(state.currentProfile, state.currentRegion).length > 0
+            : false;
+        if (this.lastHasSelectedProjects !== hasSelectedProjects) {
+            this.lastHasSelectedProjects = hasSelectedProjects;
+            void vscode.commands.executeCommand("setContext", "codebuild.hasSelectedProjects", hasSelectedProjects);
         }
 
         const hasSavedBranches = Object.keys(state.projectBranches).length > 0;

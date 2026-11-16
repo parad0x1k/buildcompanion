@@ -12,7 +12,7 @@ import { BUILD_HISTORY_LIMIT, showShortStatusMessage, type CommandDeps } from ".
 import { refreshProfilesAndProjects, switchProfile, switchRegionAndReload, setTemporaryCredentials } from "./profileCommands";
 import { triggerBuild } from "./triggerBuild";
 import { setBranch, clearAllSavedBranches } from "./branchCommands";
-import { deployAll, selectAllProjects } from "./batchDeploy";
+import { clearProjectSelection, deployAll, selectAllProjects } from "./batchDeploy";
 import { cancelBuild, cancelAllBuilds } from "./cancelBuild";
 import { viewLogs } from "./viewLogs";
 import { viewFullLogs } from "./viewFullLogs";
@@ -143,6 +143,7 @@ export function registerCodeBuildCommands({ context, store }: CommandDeps): void
         register("codebuild.editEnvironmentVariables", async (arg?: unknown) => editProjectEnvironmentVariables(context, store, arg)),
         register("codebuild.editProjectConfiguration", async (arg?: unknown) => editProjectConfiguration(context, store, arg)),
         register("codebuild.selectAllProjects", async () => selectAllProjects(store)),
+        register("codebuild.clearProjectSelection", () => clearProjectSelection(store)),
         register("codebuild.deployAll", async () => deployAll(context, store)),
         register("codebuild.setBranch", async (arg?: unknown) => setBranch(store, arg)),
         register("codebuild.clearAllBranches", async () => clearAllSavedBranches(store)),

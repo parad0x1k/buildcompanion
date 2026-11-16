@@ -1,11 +1,12 @@
 import * as vscode from "vscode";
 import { getBuildStatuses } from "../../aws/codebuildService";
-import { formatScope } from "../../notifications/notifier";
+import type { AppStore } from "../../state/store";
+import { describeScopeForModel, formatScopeForUser, isAgentToolError, resolveAgentScope } from "../scope";
 import { buildErrorResult, toToolResult, validationError, type AgentToolResult } from "../types";
 
 export interface GetBuildStatusToolInput {
-    profile: string;
-    region: string;
+    profile?: string;
+    region?: string;
     build_ids: string[];
 }
 
@@ -14,8 +15,9 @@ type BuildStatusEntry =
     | { buildId: string; found: false };
 
 type GetBuildStatusSuccess = {
-    profile: string;
+    profile?: string;
     region: string;
+    usedCurrentSelection: boolean;
     builds: BuildStatusEntry[];
 };
 
@@ -27,15 +29,22 @@ const MAX_BUILD_IDS_PER_CALL = 100;
 
 /** Agent-callable, read-only "get build status" tool for one or more build IDs. */
 export class GetBuildStatusTool implements vscode.LanguageModelTool<GetBuildStatusToolInput> {
-    public constructor(private readonly context: vscode.ExtensionContext) {}
+    public constructor(
+        private readonly context: vscode.ExtensionContext,
+        private readonly store: AppStore
+    ) {}
 
     public async prepareInvocation(
         options: vscode.LanguageModelToolInvocationPrepareOptions<GetBuildStatusToolInput>,
         _token: vscode.CancellationToken
     ): Promise<vscode.PreparedToolInvocation> {
         const count = options.input.build_ids?.length ?? 0;
+        const scope = resolveAgentScope(this.store, options.input);
+        const builds = count === 1 ? "1 build" : `${count} builds`;
         return {
-            invocationMessage: `Fetching status for ${count} build(s) in ${formatScope(options.input.profile || null, options.input.region || "(missing region)")}`
+            invocationMessage: isAgentToolError(scope)
+                ? `Fetching status for ${builds}`
+                : `Fetching status for ${builds} (${formatScopeForUser(scope)})`
         };
     }
 
@@ -47,15 +56,9 @@ export class GetBuildStatusTool implements vscode.LanguageModelTool<GetBuildStat
     }
 
     private async run(input: GetBuildStatusToolInput): Promise<AgentToolResult<GetBuildStatusSuccess>> {
-        const profile = input.profile?.trim();
-        const region = input.region?.trim();
         const buildIds = (input.build_ids ?? [])
             .map((id) => id?.trim())
             .filter((id): id is string => Boolean(id));
-
-        if (!profile || !region) {
-            return validationError("profile and region are required and must be non-empty.");
-        }
 
         if (buildIds.length === 0) {
             return validationError("build_ids must contain at least one non-empty build ID.");
@@ -65,8 +68,13 @@ export class GetBuildStatusTool implements vscode.LanguageModelTool<GetBuildStat
             return validationError(`build_ids supports at most ${MAX_BUILD_IDS_PER_CALL} IDs per call.`);
         }
 
+        const scope = resolveAgentScope(this.store, input);
+        if (isAgentToolError(scope)) {
+            return scope;
+        }
+
         try {
-            const statuses = await getBuildStatuses(profile, region, buildIds, { secretStorage: this.context.secrets });
+            const statuses = await getBuildStatuses(scope.profile, scope.region, buildIds, { secretStorage: this.context.secrets });
 
             const builds: BuildStatusEntry[] = buildIds.map((buildId) => {
                 const build = statuses.get(buildId);
@@ -84,11 +92,10 @@ export class GetBuildStatusTool implements vscode.LanguageModelTool<GetBuildStat
                 };
             });
 
-            return { ok: true, profile, region, builds };
+            return { ok: true, ...describeScopeForModel(scope), builds };
         } catch (error) {
             return buildErrorResult(error, {
-                profile,
-                region,
+                scope,
                 operation: "Fetching build statuses",
                 requiredPermissions: ["codebuild:BatchGetBuilds"]
             });

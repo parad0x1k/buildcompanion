@@ -8,16 +8,50 @@ import { getUserFriendlyErrorMessage } from "../aws/errorHandling";
 import type { AppStore } from "../state/store";
 import { logError, logInfo, sanitizeLogValue } from "../logging/outputChannelManager";
 import { formatScope, notify } from "../notifications/notifier";
-import { formatSanitizedScope, resolveProjectNameFromArg, showShortStatusMessage } from "./shared";
+import { formatSanitizedScope, pluralize, resolveProjectNameFromArg, showShortStatusMessage } from "./shared";
 import { ensureDestructiveActionsAllowed } from "./profileCommands";
 
 type EnvVarType = ProjectEnvironmentVariable["type"];
 
+/** Human-readable name and codicon for each CodeBuild environment variable type. */
+const ENV_VAR_TYPE_DISPLAY: Record<EnvVarType, { name: string; icon: string }> = {
+    PLAINTEXT: { name: "Plain text", icon: "$(symbol-string)" },
+    PARAMETER_STORE: { name: "Parameter Store", icon: "$(link)" },
+    SECRETS_MANAGER: { name: "Secrets Manager", icon: "$(lock)" }
+};
+
 export const ENV_VAR_TYPES: Array<{ label: string; description: string; type: EnvVarType }> = [
-    { label: "PLAINTEXT", description: "Stored directly on the project. Avoid for secrets.", type: "PLAINTEXT" },
-    { label: "PARAMETER_STORE", description: "Value is a Systems Manager Parameter Store name", type: "PARAMETER_STORE" },
-    { label: "SECRETS_MANAGER", description: "Value is a Secrets Manager secret name", type: "SECRETS_MANAGER" }
+    {
+        label: `${ENV_VAR_TYPE_DISPLAY.PLAINTEXT.icon} ${ENV_VAR_TYPE_DISPLAY.PLAINTEXT.name}`,
+        description: "Stored directly on the project. Avoid for secrets.",
+        type: "PLAINTEXT"
+    },
+    {
+        label: `${ENV_VAR_TYPE_DISPLAY.PARAMETER_STORE.icon} ${ENV_VAR_TYPE_DISPLAY.PARAMETER_STORE.name}`,
+        description: "Resolved from a Systems Manager parameter at build time",
+        type: "PARAMETER_STORE"
+    },
+    {
+        label: `${ENV_VAR_TYPE_DISPLAY.SECRETS_MANAGER.icon} ${ENV_VAR_TYPE_DISPLAY.SECRETS_MANAGER.name}`,
+        description: "Resolved from a Secrets Manager secret at build time",
+        type: "SECRETS_MANAGER"
+    }
 ];
+
+/**
+ * Description/detail for an environment variable row in a quick pick: the friendly type name,
+ * and the value (plain text) or the parameter/secret it resolves from, marked with that type's
+ * icon instead of an ASCII arrow.
+ */
+export function formatEnvVarPickDetails(variable: ProjectEnvironmentVariable): { description: string; detail: string } {
+    const display = ENV_VAR_TYPE_DISPLAY[variable.type] ?? { name: variable.type, icon: "$(question)" };
+
+    if (variable.type === "PLAINTEXT") {
+        return { description: display.name, detail: variable.value || "(empty)" };
+    }
+
+    return { description: display.name, detail: `${display.icon} ${variable.value}` };
+}
 
 type EditorAction =
     | { kind: "add" }
@@ -58,10 +92,16 @@ export async function promptForVariableDetails(
 
     const normalizedName = name.trim();
 
-    const typePick = await vscode.window.showQuickPick(ENV_VAR_TYPES, {
-        title: `Type for ${normalizedName}`,
-        placeHolder: "Select how CodeBuild should resolve this variable's value"
-    });
+    const typePick = await vscode.window.showQuickPick(
+        // When editing, mark the variable's current type so changing it is a deliberate choice.
+        ENV_VAR_TYPES.map((item) => (
+            item.type === initial?.type ? { ...item, description: `Current · ${item.description}` } : item
+        )),
+        {
+            title: `Type for ${normalizedName}`,
+            placeHolder: "How should CodeBuild resolve this variable's value?"
+        }
+    );
 
     if (!typePick) {
         return undefined;
@@ -69,17 +109,21 @@ export async function promptForVariableDetails(
 
     if (typePick.type === "PLAINTEXT") {
         showShortStatusMessage(
-            "Reminder: avoid storing secrets as PLAINTEXT. Prefer Parameter Store or Secrets Manager.",
+            "Reminder: plain text values are visible to anyone who can view the project. Use Parameter Store or Secrets Manager for secrets.",
             6000
         );
     }
 
+    const valuePrompts: Record<EnvVarType, string> = {
+        PLAINTEXT: "Enter the value used during the build",
+        PARAMETER_STORE: "Enter the Parameter Store parameter name, e.g. /myapp/prod/db-host",
+        SECRETS_MANAGER: "Enter the Secrets Manager secret name or ARN, optionally with :json-key"
+    };
+
     const value = await vscode.window.showInputBox({
         title: `Value for ${normalizedName}`,
         value: initial?.value ?? "",
-        prompt: typePick.type === "PLAINTEXT"
-            ? "Enter the literal value used during the build"
-            : "Enter the Parameter Store/Secrets Manager name CodeBuild should resolve at build time",
+        prompt: valuePrompts[typePick.type],
         ignoreFocusOut: true,
         validateInput: (value) => (value.trim().length === 0 ? "Value is required" : undefined)
     });
@@ -161,8 +205,7 @@ export async function editProjectEnvironmentVariables(
             .sort((a, b) => a.name.localeCompare(b.name))
             .map((variable) => ({
                 label: `$(symbol-variable) ${variable.name}`,
-                description: variable.type,
-                detail: variable.type === "PLAINTEXT" ? variable.value : `-> ${variable.value}`,
+                ...formatEnvVarPickDetails(variable),
                 action: { kind: "edit", variable } as const
             }));
 
@@ -174,7 +217,7 @@ export async function editProjectEnvironmentVariables(
         if (dirty) {
             items.push({
                 label: "$(save) Save changes to AWS",
-                description: `${variables.length} variable(s)`,
+                description: pluralize(variables.length, "variable"),
                 action: { kind: "save" }
             });
         }
@@ -227,7 +270,7 @@ export async function editProjectEnvironmentVariables(
                 );
 
                 logInfo(
-                    `[SETTINGS] Updated ${variables.length} environment variable(s) for ${sanitizeLogValue(resolvedProjectName)} (${formatSanitizedScope(profile, region)})`
+                    `[SETTINGS] Updated ${pluralize(variables.length, "environment variable")} for ${sanitizeLogValue(resolvedProjectName)} (${formatSanitizedScope(profile, region)})`
                 );
                 showShortStatusMessage(`Environment variables saved for ${resolvedProjectName}`);
                 return;

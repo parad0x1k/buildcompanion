@@ -20,7 +20,7 @@ BuildCompanion is a native VS Code extension to trigger, monitor, and debug AWS 
 
 ## Privacy & Telemetry
 
-This extension makes **no network calls outside the AWS endpoints implied by the active profile and region**, with one opt-in exception: if you enable `codebuild.agentTools.enabled` (default **off**) to let a compatible AI agent (e.g. GitHub Copilot Chat agent mode) discover and call BuildCompanion's agent tools, the inputs and outputs of those tool calls (project names, build status, branch names) are sent to whichever chat model backend you have configured, like any other tool call in that chat session. This extension collects **no telemetry** and ships **no analytics SDK**. The `telemetry.telemetryLevel` VS Code setting is respected by default (no-op since no telemetry is sent). All AWS credentials live in your local AWS configuration files or in VS Code's encrypted Secret Storage; they are never written to logs, never transmitted to third parties, and never persisted in plaintext. Credentials never flow through agent tool input/output, regardless of whether agent tools are enabled.
+This extension makes **no network calls outside the AWS endpoints implied by the active profile and region**, with one opt-in exception: if you enable `codebuild.agentTools.enabled` (default **off**) to let a compatible AI agent (e.g. GitHub Copilot Chat agent mode) discover and call BuildCompanion's agent tools, the inputs and outputs of those tool calls (project names, build status, branch names, and the region in use) are sent to whichever chat model backend you have configured, like any other tool call in that chat session. Agents use the profile and region you already selected in BuildCompanion, and when they do, your profile name is not included in what the model sees. This extension collects **no telemetry** and ships **no analytics SDK**. The `telemetry.telemetryLevel` VS Code setting is respected by default (no-op since no telemetry is sent). All AWS credentials live in your local AWS configuration files or in VS Code's encrypted Secret Storage; they are never written to logs, never transmitted to third parties, and never persisted in plaintext. Credentials never flow through agent tool input/output, regardless of whether agent tools are enabled.
 
 ## Compliance & FIPS Notice
 
@@ -127,10 +127,11 @@ All contributed commands are available through the Command Palette. Several are 
 | `codebuild.cancelBuild` | Cancel Build | Active build inline action, Command Palette | Stop a selected in-progress build |
 | `codebuild.cancelAllBuilds` | Cancel All Builds | Toolbar, Command Palette | Cancel in-progress and queued operations in current scope |
 | `codebuild.viewLogs` | View Logs | Build history inline action, Command Palette | Open the per-build log viewer and stream CloudWatch logs |
-| `codebuild.viewFullLogs` | View Full Log | Build history inline action, log viewer toolbar, Command Palette | Load a build's entire CloudWatch log history into a readable, unbounded tab |
+| `codebuild.viewFullLogs` | View Full Log | Build history inline action, log panel toolbar, Command Palette | Load a build's entire CloudWatch log history into an unbounded log panel |
 | `codebuild.retryBuild` | Retry Build | Build history inline action, Command Palette | Start a new build reusing a past build's source version |
 | `codebuild.editEnvironmentVariables` | Edit Environment Variables | Project inline action (gear icon), Command Palette | View/add/edit/remove a project's CodeBuild environment variables |
 | `codebuild.selectAllProjects` | Select All Visible Projects | Toolbar (conditional), Command Palette | Select visible projects for batch deploy |
+| `codebuild.clearProjectSelection` | Clear Project Selection | Toolbar and Projects header (when anything is selected), Command Palette | Uncheck every selected project in the current profile/region |
 | `codebuild.deployAll` | Deploy Selected Projects | Toolbar, projects root context menu, Command Palette | Start sequential batch deployment |
 | `codebuild.setBranch` | Set Branch | Project inline action, context menu, Command Palette | Save scoped branch mapping |
 | `codebuild.clearAllBranches` | Clear All Saved Branches | Toolbar (conditional), Command Palette | Clear all saved branch mappings |

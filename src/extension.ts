@@ -41,6 +41,7 @@ export async function activate(context: vscode.ExtensionContext) {
     );
     void vscode.commands.executeCommand("setContext", "codebuild.canSelectMultipleProjects", false);
     void vscode.commands.executeCommand("setContext", "codebuild.hasSavedBranches", false);
+    void vscode.commands.executeCommand("setContext", "codebuild.hasSelectedProjects", false);
 
     const treeView = vscode.window.createTreeView<TreeNode>("codebuildView", {
         treeDataProvider,

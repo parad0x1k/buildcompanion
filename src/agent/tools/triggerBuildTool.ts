@@ -3,14 +3,22 @@ import { getLatestBuildForProject, isBuildInProgress, startCodeBuild } from "../
 import { getDestructiveActionBlockReason } from "../../commands/profileCommands";
 import { setProjectStatus } from "../../commands/shared";
 import { logError, logInfo, sanitizeLogValue } from "../../logging/outputChannelManager";
-import { formatProjectScope, formatScope } from "../../notifications/notifier";
 import type { AppStore, BuildState } from "../../state/store";
+import {
+    describeScopeForModel,
+    formatScopeForModel,
+    formatScopeForUser,
+    isAgentToolError,
+    isExplicitScopeRequiredForBuilds,
+    resolveAgentScope,
+    type ResolvedAgentScope
+} from "../scope";
 import { releaseTriggerLock, tryAcquireTriggerLock } from "../singleFlightGuard";
-import { buildErrorResult, toToolResult, validationError, type AgentToolResult } from "../types";
+import { buildErrorResult, toToolResult, validationError, type AgentToolError, type AgentToolResult } from "../types";
 
 export interface TriggerBuildToolInput {
-    profile: string;
-    region: string;
+    profile?: string;
+    region?: string;
     project_name: string;
     branch?: string;
 }
@@ -18,20 +26,45 @@ export interface TriggerBuildToolInput {
 type TriggerBuildSuccess = {
     buildId: string;
     status: string;
-    profile: string;
+    profile?: string;
     region: string;
+    usedCurrentSelection: boolean;
     projectName: string;
     branch?: string;
 };
 
+// How long a confirmed scope stays pinned between prepareInvocation (the dialog the user sees)
+// and invoke (the actual StartBuild). Long enough for someone to read the dialog; short enough
+// that a stale entry can't outlive the conversation turn it belongs to.
+const CONFIRMED_SCOPE_TTL_MS = 10 * 60 * 1000;
+
+function confirmationKey(input: TriggerBuildToolInput): string {
+    return JSON.stringify([
+        input.profile?.trim() ?? "",
+        input.region?.trim() ?? "",
+        input.project_name?.trim() ?? "",
+        input.branch?.trim() ?? ""
+    ]);
+}
+
 /**
- * Agent-callable "trigger a build" tool. Deliberately built on the same `startCodeBuild` call and
- * store-merge pattern as the human trigger/batch-deploy flows (see triggerBuild.ts and
- * batchDeploy.ts's onBuildTriggered callback), but with every ambient-state lookup replaced by an
- * explicit, required input field - see design review for why reusing triggerBuild.ts's
- * `store.getState().currentProfile` lookup would be unsafe for a non-interactive caller.
+ * Agent-callable "trigger a build" tool. Built on the same `startCodeBuild` call and store-merge
+ * pattern as the human trigger/batch-deploy flows (see triggerBuild.ts and batchDeploy.ts's
+ * onBuildTriggered callback).
+ *
+ * Profile and region are optional: when omitted, the user's current BuildCompanion selection is
+ * used, so agents don't need to ask for values the user already chose. That stays safe because:
+ * - the scope comes from the user's own explicit choice in the BuildCompanion view, never from
+ *   anything the model supplies or guesses;
+ * - the confirmation dialog spells out the exact profile and region (with real names - that
+ *   dialog is shown to the user, not sent to the model);
+ * - the scope shown in that dialog is pinned, and the build is refused if the selection changes
+ *   before it starts;
+ * - `codebuild.agentTools.requireExplicitScopeForBuilds` restores "the agent must name both".
  */
 export class TriggerBuildTool implements vscode.LanguageModelTool<TriggerBuildToolInput> {
+    private readonly confirmedScopes = new Map<string, { profile: string; region: string; expiresAtMs: number }>();
+
     public constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly store: AppStore
@@ -41,17 +74,31 @@ export class TriggerBuildTool implements vscode.LanguageModelTool<TriggerBuildTo
         options: vscode.LanguageModelToolInvocationPrepareOptions<TriggerBuildToolInput>,
         _token: vscode.CancellationToken
     ): Promise<vscode.PreparedToolInvocation> {
-        const { profile, region, project_name: projectName, branch } = options.input;
-        const scopeLabel = formatProjectScope(projectName || "(missing project)", profile || null, region || "(missing region)");
+        const projectName = options.input.project_name?.trim() || "(missing project)";
+        const branch = options.input.branch?.trim();
         const branchLabel = branch ? `branch/source version \`${branch}\`` : "the project's default source version";
+        const scope = this.resolveScope(options.input);
+
+        if (isAgentToolError(scope)) {
+            // invoke() returns the same error without starting anything; no confirmation needed.
+            return { invocationMessage: `Checking build request for ${projectName}` };
+        }
+
+        this.pinConfirmedScope(options.input, scope);
+
+        const selectionNote = scope.source === "selection"
+            ? "\n\nThis is your current BuildCompanion selection. Change it in the BuildCompanion view first if you meant a different account or region."
+            : "";
 
         return {
-            invocationMessage: `Starting a build for ${scopeLabel}`,
+            invocationMessage: `Starting a build for ${projectName} (${formatScopeForUser(scope)})`,
             confirmationMessages: {
                 title: "Start a CodeBuild build?",
                 message: new vscode.MarkdownString(
-                    `Start a build for **${scopeLabel}** using ${branchLabel}?\n\n` +
-                        "This calls AWS CodeBuild's `StartBuild`, runs the project's configured build steps " +
+                    `Start a build for **${projectName}** using ${branchLabel}?\n\n` +
+                        `- Profile: \`${scope.profile}\`\n- Region: \`${scope.region}\`` +
+                        selectionNote +
+                        "\n\nThis calls AWS CodeBuild's `StartBuild`, runs the project's configured build steps " +
                         "under its own service role, and may incur AWS cost. The build will appear in " +
                         "BuildCompanion's Active Builds view like any build triggered from the editor."
                 )
@@ -66,14 +113,71 @@ export class TriggerBuildTool implements vscode.LanguageModelTool<TriggerBuildTo
         return toToolResult(await this.run(options.input));
     }
 
+    private resolveScope(input: TriggerBuildToolInput): ResolvedAgentScope | AgentToolError {
+        if (isExplicitScopeRequiredForBuilds() && (!input.profile?.trim() || !input.region?.trim())) {
+            return validationError(
+                "This workspace requires builds to name the AWS profile and region explicitly. " +
+                    "Ask the user which profile and region to use, then pass both."
+            );
+        }
+
+        return resolveAgentScope(this.store, input);
+    }
+
+    private pinConfirmedScope(input: TriggerBuildToolInput, scope: ResolvedAgentScope): void {
+        const now = Date.now();
+        for (const [key, entry] of this.confirmedScopes) {
+            if (entry.expiresAtMs <= now) {
+                this.confirmedScopes.delete(key);
+            }
+        }
+
+        this.confirmedScopes.set(confirmationKey(input), {
+            profile: scope.profile,
+            region: scope.region,
+            expiresAtMs: now + CONFIRMED_SCOPE_TTL_MS
+        });
+    }
+
+    /** True if the user confirmed a different scope than the one this call would now use. */
+    private takeScopeMismatch(input: TriggerBuildToolInput, scope: ResolvedAgentScope): boolean {
+        const key = confirmationKey(input);
+        const confirmed = this.confirmedScopes.get(key);
+        this.confirmedScopes.delete(key);
+
+        if (!confirmed || confirmed.expiresAtMs <= Date.now()) {
+            return false;
+        }
+
+        return confirmed.profile !== scope.profile || confirmed.region !== scope.region;
+    }
+
     private async run(input: TriggerBuildToolInput): Promise<AgentToolResult<TriggerBuildSuccess>> {
-        const profile = input.profile?.trim();
-        const region = input.region?.trim();
         const projectName = input.project_name?.trim();
         const branch = input.branch?.trim() || undefined;
 
-        if (!profile || !region || !projectName) {
-            return validationError("profile, region, and project_name are required and must be non-empty.");
+        if (!projectName) {
+            return validationError("project_name is required and must be non-empty.");
+        }
+
+        const scope = this.resolveScope(input);
+        if (isAgentToolError(scope)) {
+            return scope;
+        }
+
+        const { profile, region } = scope;
+        const modelScope = describeScopeForModel(scope);
+        const modelScopeLabel = formatScopeForModel(scope);
+
+        if (this.takeScopeMismatch(input, scope)) {
+            return {
+                ok: false,
+                errorType: "SCOPE_CHANGED",
+                message: "The user's BuildCompanion profile or region changed after they confirmed this build, so nothing was started. " +
+                    "Tell the user, and call this tool again only if they still want the build (they will be asked to confirm the new scope).",
+                ...modelScope,
+                projectName
+            };
         }
 
         // Non-modal equivalent of ensureDestructiveActionsAllowed: its blocking modal has no
@@ -83,10 +187,9 @@ export class TriggerBuildTool implements vscode.LanguageModelTool<TriggerBuildTo
             return {
                 ok: false,
                 errorType: "BLOCKED",
-                message: `Destructive actions are currently blocked for ${formatScope(profile, region)}: ${blockReason}. ` +
+                message: `Builds are currently blocked for ${modelScopeLabel} because BuildCompanion could not validate that scope. ` +
                     "Ask the user to run \"Switch Profile\" in BuildCompanion or resolve the underlying issue, then retry.",
-                profile,
-                region,
+                ...modelScope,
                 projectName
             };
         }
@@ -95,10 +198,9 @@ export class TriggerBuildTool implements vscode.LanguageModelTool<TriggerBuildTo
             return {
                 ok: false,
                 errorType: "ALREADY_IN_PROGRESS",
-                message: `Another trigger_build call for ${formatProjectScope(projectName, profile, region)} is already in flight. ` +
+                message: `Another trigger_build call for ${projectName} in ${modelScopeLabel} is already in flight. ` +
                     "Wait for it to finish before retrying - do not call this tool again immediately.",
-                profile,
-                region,
+                ...modelScope,
                 projectName
             };
         }
@@ -116,10 +218,9 @@ export class TriggerBuildTool implements vscode.LanguageModelTool<TriggerBuildTo
                 return {
                     ok: false,
                     errorType: "ALREADY_IN_PROGRESS",
-                    message: `A build is already in progress for ${formatProjectScope(projectName, profile, region)} ` +
+                    message: `A build is already in progress for ${projectName} in ${modelScopeLabel} ` +
                         `(build ID ${latestBuild?.id}). Ask the user whether to wait for it or proceed anyway before calling this tool again.`,
-                    profile,
-                    region,
+                    ...modelScope,
                     projectName
                 };
             }
@@ -146,15 +247,13 @@ export class TriggerBuildTool implements vscode.LanguageModelTool<TriggerBuildTo
                 ok: true,
                 buildId: build.id,
                 status: build.status,
-                profile,
-                region,
+                ...modelScope,
                 projectName,
                 branch
             };
         } catch (error) {
             const result = buildErrorResult(error, {
-                profile,
-                region,
+                scope,
                 projectName,
                 operation: "Triggering build",
                 requiredPermissions: ["codebuild:StartBuild"]

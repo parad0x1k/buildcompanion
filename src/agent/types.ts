@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { getUserFriendlyErrorMessage } from "../aws/errorHandling";
+import { CURRENT_PROFILE_LABEL, describeScopeForModel, type ResolvedAgentScope } from "./scope";
 
 /**
  * Structured result shape returned by every BuildCompanion agent tool, serialized as JSON text
@@ -14,6 +15,8 @@ export type AgentToolErrorType =
     | "ALREADY_IN_PROGRESS"
     | "BLOCKED"
     | "PERMISSION_DENIED"
+    | "NO_SELECTION"
+    | "SCOPE_CHANGED"
     | "UNEXPECTED_ERROR";
 
 export type AgentToolError = {
@@ -22,6 +25,7 @@ export type AgentToolError = {
     message: string;
     profile?: string;
     region?: string;
+    usedCurrentSelection?: boolean;
     projectName?: string;
     requiredPermissions?: string[];
 };
@@ -49,22 +53,27 @@ export function validationError(message: string): AgentToolError {
 export function buildErrorResult(
     error: unknown,
     context: {
-        profile?: string;
-        region?: string;
+        scope: ResolvedAgentScope;
         projectName?: string;
         operation: string;
         requiredPermissions: string[];
     }
 ): AgentToolError {
-    const message = getUserFriendlyErrorMessage(error, context);
+    // profileLabel, not the real profile: a profile taken from the user's selection must not
+    // appear in the message ("...for profile acme-prod") that is relayed to the model.
+    const message = getUserFriendlyErrorMessage(error, {
+        profile: context.scope.profileLabel,
+        region: context.scope.region,
+        operation: context.operation,
+        requiredPermissions: context.requiredPermissions
+    }).replace(`for profile ${CURRENT_PROFILE_LABEL}`, `for ${CURRENT_PROFILE_LABEL}`);
     const isPermissionDenied = /missing (required )?aws permissions/i.test(message);
 
     return {
         ok: false,
         errorType: isPermissionDenied ? "PERMISSION_DENIED" : "UNEXPECTED_ERROR",
         message,
-        profile: context.profile,
-        region: context.region,
+        ...describeScopeForModel(context.scope),
         projectName: context.projectName,
         requiredPermissions: isPermissionDenied ? context.requiredPermissions : undefined
     };

@@ -1,18 +1,20 @@
 import * as vscode from "vscode";
 import { listRecentBuildHistoryForProject } from "../../aws/codebuildService";
-import { formatProjectScope } from "../../notifications/notifier";
+import type { AppStore } from "../../state/store";
+import { describeScopeForModel, formatScopeForUser, isAgentToolError, resolveAgentScope } from "../scope";
 import { buildErrorResult, toToolResult, validationError, type AgentToolResult } from "../types";
 
 export interface ListRecentBuildsToolInput {
-    profile: string;
-    region: string;
+    profile?: string;
+    region?: string;
     project_name: string;
     limit?: number;
 }
 
 type ListRecentBuildsSuccess = {
-    profile: string;
+    profile?: string;
     region: string;
+    usedCurrentSelection: boolean;
     projectName: string;
     builds: Array<{
         buildId: string;
@@ -34,15 +36,21 @@ const MAX_LIMIT = 100;
 
 /** Agent-callable, read-only "list recent build history for a project" tool. */
 export class ListRecentBuildsTool implements vscode.LanguageModelTool<ListRecentBuildsToolInput> {
-    public constructor(private readonly context: vscode.ExtensionContext) {}
+    public constructor(
+        private readonly context: vscode.ExtensionContext,
+        private readonly store: AppStore
+    ) {}
 
     public async prepareInvocation(
         options: vscode.LanguageModelToolInvocationPrepareOptions<ListRecentBuildsToolInput>,
         _token: vscode.CancellationToken
     ): Promise<vscode.PreparedToolInvocation> {
-        const { profile, region, project_name: projectName } = options.input;
+        const projectName = options.input.project_name || "(missing project)";
+        const scope = resolveAgentScope(this.store, options.input);
         return {
-            invocationMessage: `Fetching recent build history for ${formatProjectScope(projectName || "(missing project)", profile || null, region || "(missing region)")}`
+            invocationMessage: isAgentToolError(scope)
+                ? `Fetching recent build history for ${projectName}`
+                : `Fetching recent build history for ${projectName} (${formatScopeForUser(scope)})`
         };
     }
 
@@ -54,26 +62,27 @@ export class ListRecentBuildsTool implements vscode.LanguageModelTool<ListRecent
     }
 
     private async run(input: ListRecentBuildsToolInput): Promise<AgentToolResult<ListRecentBuildsSuccess>> {
-        const profile = input.profile?.trim();
-        const region = input.region?.trim();
         const projectName = input.project_name?.trim();
+        if (!projectName) {
+            return validationError("project_name is required and must be non-empty.");
+        }
 
-        if (!profile || !region || !projectName) {
-            return validationError("profile, region, and project_name are required and must be non-empty.");
+        const scope = resolveAgentScope(this.store, input);
+        if (isAgentToolError(scope)) {
+            return scope;
         }
 
         const requestedLimit = Number.isFinite(input.limit) ? Math.floor(input.limit as number) : DEFAULT_LIMIT;
         const limit = Math.min(MAX_LIMIT, Math.max(1, requestedLimit));
 
         try {
-            const history = await listRecentBuildHistoryForProject(profile, region, projectName, limit, {
+            const history = await listRecentBuildHistoryForProject(scope.profile, scope.region, projectName, limit, {
                 secretStorage: this.context.secrets
             });
 
             return {
                 ok: true,
-                profile,
-                region,
+                ...describeScopeForModel(scope),
                 projectName,
                 builds: history.map((entry) => ({
                     buildId: entry.id,
@@ -90,8 +99,7 @@ export class ListRecentBuildsTool implements vscode.LanguageModelTool<ListRecent
             };
         } catch (error) {
             return buildErrorResult(error, {
-                profile,
-                region,
+                scope,
                 projectName,
                 operation: "Fetching build history",
                 requiredPermissions: ["codebuild:ListBuildsForProject", "codebuild:BatchGetBuilds"]

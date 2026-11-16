@@ -50,9 +50,11 @@ BuildCompanion can expose a small set of operations to compatible AI agents (e.g
 **Enablement:** off by default. Set `codebuild.agentTools.enabled` to `true` to register the tools; the setting can be toggled live without reloading VS Code. Requires VS Code `^1.95.0` or later (the version that finalized the Language Model Tool API).
 
 **Design principles applied:**
-- Every tool requires explicit `profile`/`region` input and never falls back to whatever is currently selected in the tree view, to avoid targeting the wrong AWS account/region/project (a confused-deputy risk identified during design review).
-- Every tool returns a structured JSON result (serialized as the tool's text output) with an `ok` boolean and, on failure, a machine-readable `errorType` (`VALIDATION_ERROR`, `NOT_FOUND`, `ALREADY_IN_PROGRESS`, `BLOCKED`, `PERMISSION_DENIED`, `UNEXPECTED_ERROR`) plus a human-readable `message` - never raw AWS SDK error text, which can contain ARNs/account IDs.
-- The mutating tool (`codebuild_trigger_build`) shows a confirmation naming the literal resolved profile/region/project/branch before running (via `prepareInvocation`), and restates the same information in its result, since VS Code's own "Always Allow"/"Allow all"/organization auto-approve settings can suppress the confirmation dialog on repeat calls - the result is the one place that information reliably survives.
+- **Scope defaults to the user's selection.** `profile` and `region` are optional on every tool (implemented in `src/agent/scope.ts`). When omitted, the profile and region the user selected in the BuildCompanion view are used, and the tool descriptions tell the model to omit them rather than ask the user. The scope therefore always comes from an explicit user choice, never from a model guess. An explicitly passed profile always wins, and must be a profile BuildCompanion has discovered (rejected with `VALIDATION_ERROR` otherwise, without listing the real ones, so a model can't probe for profile names). No selection and no explicit profile returns `NO_SELECTION`.
+- **Profile names are withheld from the model.** When the user's selection is used, results report `usedCurrentSelection: true` and the `region` but omit `profile`, and error messages say "the current BuildCompanion profile" instead of the name. Profile names often encode account, client, or environment names. A profile the agent passed itself is echoed back, since the model already has it. Credentials, account IDs, ARNs, and the list of configured profiles never appear in tool output.
+- **Confirmed scope is pinned for builds.** `codebuild_trigger_build`'s confirmation (rendered locally by VS Code, not sent to the model) shows the real profile and region and notes when they are the user's current selection. That exact scope is pinned for up to 10 minutes; if the selection changes before `invoke` runs, nothing is started and the result is `SCOPE_CHANGED`. `codebuild.agentTools.requireExplicitScopeForBuilds` (default `false`) makes the trigger tool refuse to fall back to the selection, so the agent must ask the user for both.
+- Every tool returns a structured JSON result (serialized as the tool's text output) with an `ok` boolean and, on failure, a machine-readable `errorType` (`VALIDATION_ERROR`, `NO_SELECTION`, `SCOPE_CHANGED`, `NOT_FOUND`, `ALREADY_IN_PROGRESS`, `BLOCKED`, `PERMISSION_DENIED`, `UNEXPECTED_ERROR`) plus a human-readable `message` - never raw AWS SDK error text, which can contain ARNs/account IDs.
+- The mutating tool (`codebuild_trigger_build`) restates the region, project and branch in its result, since VS Code's own "Always Allow"/"Allow all"/organization auto-approve settings can suppress the confirmation dialog on repeat calls - the result is the one place that information reliably survives.
 - `codebuild_trigger_build` does not expose branch/image/buildspec/environment-variable/privileged-mode overrides. AWS documents several of those fields (`buildspecOverride`, `privilegedModeOverride`) as distinguished-risk, with their own IAM condition keys, specifically because they let the caller change what code runs under the project's service role. Use "Start Build with Overrides..." in the editor for that; it is not agent-callable.
 - `codebuild_trigger_build` is guarded by a per-(profile, region, project) in-flight lock and a deterministic `idempotencyToken`, and declines (with a structured `ALREADY_IN_PROGRESS` result) rather than queuing or force-starting when a build is already running for the project - there is no agent-reachable equivalent of the tree view's "Wait / Trigger anyway / Cancel" prompt.
 - Builds started via `codebuild_trigger_build` are tracked in the same `AppStore` as tree-view-triggered builds (Active Builds, Failed Builds attribution, TreeView status) and ride the same adaptive-polling budget - there is no separate agent-only state or polling loop.
@@ -62,9 +64,9 @@ BuildCompanion can expose a small set of operations to compatible AI agents (e.g
 
 | Tool name | Mutating? | Purpose | Required IAM permission(s) |
 | --- | --- | --- | --- |
-| `codebuild_trigger_build` | Yes | Starts a build for an explicit project, using its default source version or an optional branch/tag/commit | `codebuild:StartBuild` |
-| `codebuild_list_projects` | No | Lists CodeBuild project names for an explicit profile/region | `codebuild:ListProjects` |
-| `codebuild_get_build_status` | No | Fetches current status for up to 100 explicit build IDs | `codebuild:BatchGetBuilds` |
+| `codebuild_trigger_build` | Yes | Starts a build for a named project in the user's selected (or an explicitly named) profile/region, using its default source version or an optional branch/tag/commit | `codebuild:StartBuild` |
+| `codebuild_list_projects` | No | Lists CodeBuild project names in the user's selected (or an explicitly named) profile/region | `codebuild:ListProjects` |
+| `codebuild_get_build_status` | No | Fetches current status for up to 100 build IDs | `codebuild:BatchGetBuilds` |
 | `codebuild_list_recent_builds` | No | Lists recent build history (status, source version, timing) for one project, up to 100 results | `codebuild:ListBuildsForProject`, `codebuild:BatchGetBuilds` |
 
 No additional IAM permissions are required beyond what the equivalent tree-view actions already use, and `iam:PassRole` is never required (verified against the AWS Service Authorization Reference: it is only a dependent action for `StartBuild`/`UpdateProject` when a `serviceRoleOverride`/`serviceRole` field is set, which this feature never does).
@@ -97,6 +99,7 @@ No additional IAM permissions are required beyond what the equivalent tree-view 
 | `codebuild.editEnvironmentVariables` | Edit Environment Variables | BuildCompanion |
 | `codebuild.editProjectConfiguration` | Edit Project Configuration... | BuildCompanion |
 | `codebuild.selectAllProjects` | Select All Visible Projects | BuildCompanion |
+| `codebuild.clearProjectSelection` | Clear Project Selection | BuildCompanion |
 | `codebuild.deployAll` | Deploy Selected Projects | BuildCompanion |
 | `codebuild.setBranch` | Set Branch | BuildCompanion |
 | `codebuild.clearAllBranches` | Clear All Saved Branches | BuildCompanion |
@@ -118,6 +121,7 @@ No additional IAM permissions are required beyond what the equivalent tree-view 
 - `onCommand:codebuild.viewLogs`
 - `onCommand:codebuild.viewFullLogs`
 - `onCommand:codebuild.selectAllProjects`
+- `onCommand:codebuild.clearProjectSelection`
 - `onCommand:codebuild.deployAll`
 - `onCommand:codebuild.setBranch`
 - `onCommand:codebuild.clearAllBranches`
@@ -140,6 +144,7 @@ No additional IAM permissions are required beyond what the equivalent tree-view 
 - `codebuild.viewFullLogs`: `view == codebuildView && viewItem == buildInProgress`
 - `codebuild.cancelBuild`: `view == codebuildView && viewItem == buildInProgress`
 - `codebuild.deployAll`: `view == codebuildView && viewItem == projectsRoot`
+- `codebuild.clearProjectSelection`: `view == codebuildView && viewItem == projectsRoot && codebuild.hasSelectedProjects` — inline icon on the Projects header and in its right-click menu
 
 #### `editor/title`
 
@@ -153,6 +158,7 @@ No additional IAM permissions are required beyond what the equivalent tree-view 
 - `codebuild.clearProjectSearch`
 - `codebuild.cancelAllBuilds`
 - `codebuild.selectAllProjects` (only when `codebuild.canSelectMultipleProjects` is true)
+- `codebuild.clearProjectSelection` (only when `codebuild.hasSelectedProjects` is true)
 - `codebuild.deployAll`
 - `codebuild.clearAllBranches` (only when `codebuild.hasSavedBranches` is true)
 
@@ -192,6 +198,8 @@ Checkbox behavior:
 
 - Project checkboxes are shown for every currently visible project row, regardless of filter or result count, so narrowing a search down to a single match still allows selecting it into a batch.
 - `Select All Visible Projects` remains available only when there is no filter, or the filter matches more than one project.
+- `Clear Project Selection` unchecks every selected project in the current profile + region, including selected projects hidden by the current search filter; selections in other scopes are kept. It appears in the toolbar and as an inline icon on the Projects header only while something is selected (`codebuild.hasSelectedProjects`).
+- The batch deploy confirmation lists each project as `•  <project> — <branch>` (`project default` when no branch is saved or given), states the delay between builds in words, and shows at most 20 rows followed by `…and N more projects`.
 - Selection state is scoped by profile + region + project name.
 - Selecting a project (via checkbox or Select All) beyond `codebuild.batchDeploy.maxSelectedProjects` is blocked with a warning notification; a rejected checkbox reverts to unchecked.
 
@@ -610,6 +618,8 @@ No-profile message:
 
 | Setting | Type | Default | Range | Behavior |
 | --- | --- | --- | --- | --- |
+| `codebuild.agentTools.enabled` | boolean | `false` | n/a | Register BuildCompanion's AI agent tools |
+| `codebuild.agentTools.requireExplicitScopeForBuilds` | boolean | `false` | n/a | Make agents name the profile and region to trigger a build instead of using the current selection |
 | `codebuild.monitor.adaptivePolling` | boolean | `true` | n/a | Adaptive interval scaling by active build count |
 | `codebuild.monitor.pollIntervalMs` | integer | `5000` | `3000..15000` | Base interval between active-build status checks |
 | `codebuild.monitor.maxConcurrentStatusChecks` | integer | `6` | `1..20` | Max parallel status polling checks |

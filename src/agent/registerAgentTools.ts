@@ -29,9 +29,9 @@ export function registerAgentTools(context: vscode.ExtensionContext, store: AppS
 
         toolSubscriptions = [
             vscode.lm.registerTool("codebuild_trigger_build", new TriggerBuildTool(context, store)),
-            vscode.lm.registerTool("codebuild_list_projects", new ListProjectsTool(context)),
-            vscode.lm.registerTool("codebuild_get_build_status", new GetBuildStatusTool(context)),
-            vscode.lm.registerTool("codebuild_list_recent_builds", new ListRecentBuildsTool(context))
+            vscode.lm.registerTool("codebuild_list_projects", new ListProjectsTool(context, store)),
+            vscode.lm.registerTool("codebuild_get_build_status", new GetBuildStatusTool(context, store)),
+            vscode.lm.registerTool("codebuild_list_recent_builds", new ListRecentBuildsTool(context, store))
         ];
     }
 

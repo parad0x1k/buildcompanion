@@ -273,12 +273,22 @@ export function canSelectAllVisibleProjects(
     return visibleProjects.length > 1;
 }
 
+/** "1 project" / "3 projects". */
+export function pluralize(count: number, singular: string, plural: string = `${singular}s`): string {
+    return `${count} ${count === 1 ? singular : plural}`;
+}
+
+/**
+ * One bulleted "project — branch" line per project for the batch deploy confirmation. Native
+ * modal detail text uses a proportional font, so this avoids column alignment entirely.
+ */
 export function formatDeploymentPreview(
     batchProjects: Array<{ projectName: string; branch?: string }>
 ): string {
-    const lines = batchProjects.map(
-        ({ projectName, branch }) => `${projectName} -> ${formatBranchForNotification(branch)}`
-    );
+    const lines = batchProjects.map(({ projectName, branch }) => {
+        const normalizedBranch = branch?.trim();
+        return `•  ${projectName} — ${normalizedBranch ? normalizedBranch : "project default"}`;
+    });
     const maxLines = 20;
 
     if (lines.length <= maxLines) {
@@ -286,7 +296,7 @@ export function formatDeploymentPreview(
     }
 
     const remainingCount = lines.length - maxLines;
-    return `${lines.slice(0, maxLines).join("\n")}\n...and ${remainingCount} more project(s)`;
+    return `${lines.slice(0, maxLines).join("\n")}\n…and ${pluralize(remainingCount, "more project")}`;
 }
 
 export async function promptForBranchSelection(options: {

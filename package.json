@@ -169,6 +169,13 @@
         "icon": "$(check-all)"
       },
       {
+        "command": "codebuild.clearProjectSelection",
+        "title": "Clear Project Selection",
+        "category": "BuildCompanion",
+        "icon": "$(clear-all)",
+        "enablement": "codebuild.hasSelectedProjects"
+      },
+      {
         "command": "codebuild.deployAll",
         "title": "Deploy Selected Projects",
         "category": "BuildCompanion",
@@ -215,7 +222,7 @@
         "canBeReferencedInPrompt": true,
         "icon": "$(play)",
         "userDescription": "Trigger a CodeBuild build",
-        "modelDescription": "Starts a new AWS CodeBuild build for the given project, using its default source version unless a branch/tag/commit is provided. This is a MUTATING operation: it runs the project's configured build steps under the project's own IAM service role, may incur AWS cost, and is not reversible from this tool (there is no stop/cancel tool). It does NOT support build-scoped overrides (environment variables, buildspec, compute image, privileged mode, timeouts) - those are intentionally never exposed to this tool; if the user needs an override, tell them to use BuildCompanion's \"Start Build with Overrides...\" command in VS Code instead. profile and region must be exact, explicit values - never guess or reuse values from earlier in the conversation without the user confirming they still apply. If a build is already in progress for the project, this returns an ALREADY_IN_PROGRESS result instead of starting a second one; ask the user how to proceed rather than retrying automatically. Requires the codebuild:StartBuild IAM permission.",
+        "modelDescription": "Starts a new AWS CodeBuild build for the given project, using its default source version unless a branch/tag/commit is provided. This is a MUTATING operation: it runs the project's configured build steps under the project's own IAM service role, may incur AWS cost, and is not reversible from this tool (there is no stop/cancel tool). It does NOT support build-scoped overrides (environment variables, buildspec, compute image, privileged mode, timeouts) - those are intentionally never exposed to this tool; if the user needs an override, tell them to use BuildCompanion's \"Start Build with Overrides...\" command in VS Code instead. Omit profile and region: BuildCompanion then uses the profile and region the user has already selected in its view, and shows the user that exact scope in a confirmation before anything starts. Do not ask the user for a profile or region, and never guess one; pass them only when the user explicitly names a different profile or region for this build. The result reports usedCurrentSelection and the region; the profile name is intentionally withheld when the user's selection was used. If the result is NO_SELECTION, ask the user to pick a profile in the BuildCompanion view. If it is SCOPE_CHANGED, the user changed their selection after confirming and nothing was started. If a build is already in progress for the project, this returns an ALREADY_IN_PROGRESS result instead of starting a second one; ask the user how to proceed rather than retrying automatically. Requires the codebuild:StartBuild IAM permission.",
         "tags": [
           "aws",
           "codebuild"
@@ -226,15 +233,15 @@
           "properties": {
             "profile": {
               "type": "string",
-              "description": "The exact AWS profile name to use (as configured in ~/.aws/config, ~/.aws/credentials, or a BuildCompanion temporary-credential profile). Required: do not infer this from whatever happens to be selected in the BuildCompanion tree view."
+              "description": "Usually omit. Defaults to the AWS profile the user has selected in BuildCompanion. Pass only if the user explicitly names a different profile; it must be a profile BuildCompanion already knows."
             },
             "region": {
               "type": "string",
-              "description": "The exact AWS region to target, e.g. us-east-1. Required: do not infer this from the tree view's current selection."
+              "description": "Usually omit. Defaults to the region the user has selected in BuildCompanion. Pass only if the user explicitly names a different region, e.g. us-west-2."
             },
             "project_name": {
               "type": "string",
-              "description": "The exact CodeBuild project name to trigger a build for."
+              "description": "The exact CodeBuild project name to trigger a build for. Use codebuild_list_projects (with no profile/region) to find it if unsure."
             },
             "branch": {
               "type": "string",
@@ -242,8 +249,6 @@
             }
           },
           "required": [
-            "profile",
-            "region",
             "project_name"
           ]
         }
@@ -255,7 +260,7 @@
         "canBeReferencedInPrompt": true,
         "icon": "$(list-tree)",
         "userDescription": "List CodeBuild projects",
-        "modelDescription": "Lists AWS CodeBuild project names visible to the given AWS profile and region. Read-only: does not start, stop, or modify anything. Requires the codebuild:ListProjects IAM permission.",
+        "modelDescription": "Lists AWS CodeBuild project names. Call it with no arguments to use the profile and region the user has already selected in BuildCompanion - do not ask the user for them. Read-only: does not start, stop, or modify anything. The result reports usedCurrentSelection and the region; the profile name is withheld when the user's selection was used. A NO_SELECTION result means the user has not picked a profile in BuildCompanion yet. Requires the codebuild:ListProjects IAM permission.",
         "tags": [
           "aws",
           "codebuild"
@@ -266,17 +271,14 @@
           "properties": {
             "profile": {
               "type": "string",
-              "description": "The exact AWS profile name to list CodeBuild projects for."
+              "description": "Usually omit (defaults to the user's BuildCompanion selection). Pass only if the user explicitly names a different profile."
             },
             "region": {
               "type": "string",
-              "description": "The exact AWS region to list CodeBuild projects in."
+              "description": "Usually omit (defaults to the user's BuildCompanion selection). Pass only if the user explicitly names a different region."
             }
           },
-          "required": [
-            "profile",
-            "region"
-          ]
+          "required": []
         }
       },
       {
@@ -286,7 +288,7 @@
         "canBeReferencedInPrompt": true,
         "icon": "$(info)",
         "userDescription": "Get CodeBuild build status",
-        "modelDescription": "Fetches the current status of one or more AWS CodeBuild builds by their exact build IDs (e.g. a build ID returned by the trigger_build or list_recent_builds tools). Read-only; up to 100 build IDs per call. A build ID that doesn't exist is reported individually as found: false rather than failing the whole call. Requires the codebuild:BatchGetBuilds IAM permission.",
+        "modelDescription": "Fetches the current status of one or more AWS CodeBuild builds by their exact build IDs (e.g. a build ID returned by the trigger_build or list_recent_builds tools). Read-only; up to 100 build IDs per call. A build ID that doesn't exist is reported individually as found: false rather than failing the whole call. Omit profile and region to use the user's BuildCompanion selection (the same scope trigger_build used when it also omitted them) - do not ask the user for them. Requires the codebuild:BatchGetBuilds IAM permission.",
         "tags": [
           "aws",
           "codebuild"
@@ -297,11 +299,11 @@
           "properties": {
             "profile": {
               "type": "string",
-              "description": "The exact AWS profile name to use."
+              "description": "Usually omit (defaults to the user's BuildCompanion selection). Pass only if the build was started in a profile the user explicitly named."
             },
             "region": {
               "type": "string",
-              "description": "The exact AWS region the build(s) are in."
+              "description": "Usually omit (defaults to the user's BuildCompanion selection). Pass only if the build is in a region the user explicitly named."
             },
             "build_ids": {
               "type": "array",
@@ -314,8 +316,6 @@
             }
           },
           "required": [
-            "profile",
-            "region",
             "build_ids"
           ]
         }
@@ -327,7 +327,7 @@
         "canBeReferencedInPrompt": true,
         "icon": "$(history)",
         "userDescription": "List recent build history for a project",
-        "modelDescription": "Lists recent build history (most recent first) for a single AWS CodeBuild project: build ID, status, source version, start/end time, and duration. Read-only. Returns at most 100 builds per call (set limit to control how many are returned, default 20). If the result's truncated field is true, more history may exist beyond what was returned. Requires the codebuild:ListBuildsForProject and codebuild:BatchGetBuilds IAM permissions.",
+        "modelDescription": "Lists recent build history (most recent first) for a single AWS CodeBuild project: build ID, status, source version, start/end time, and duration. Read-only. Returns at most 100 builds per call (set limit to control how many are returned, default 20). If the result's truncated field is true, more history may exist beyond what was returned. Omit profile and region to use the user's BuildCompanion selection - do not ask the user for them. Requires the codebuild:ListBuildsForProject and codebuild:BatchGetBuilds IAM permissions.",
         "tags": [
           "aws",
           "codebuild"
@@ -338,11 +338,11 @@
           "properties": {
             "profile": {
               "type": "string",
-              "description": "The exact AWS profile name to use."
+              "description": "Usually omit (defaults to the user's BuildCompanion selection). Pass only if the user explicitly names a different profile."
             },
             "region": {
               "type": "string",
-              "description": "The exact AWS region the project is in."
+              "description": "Usually omit (defaults to the user's BuildCompanion selection). Pass only if the user explicitly names a different region."
             },
             "project_name": {
               "type": "string",
@@ -357,8 +357,6 @@
             }
           },
           "required": [
-            "profile",
-            "region",
             "project_name"
           ]
         }
@@ -470,6 +468,16 @@
           "group": "navigation@1"
         },
         {
+          "command": "codebuild.clearProjectSelection",
+          "when": "view == codebuildView && viewItem == projectsRoot && codebuild.hasSelectedProjects",
+          "group": "inline@1"
+        },
+        {
+          "command": "codebuild.clearProjectSelection",
+          "when": "view == codebuildView && viewItem == projectsRoot && codebuild.hasSelectedProjects",
+          "group": "navigation@2"
+        },
+        {
           "command": "codebuild.refresh",
           "when": "view == codebuildView && viewItem == project",
           "group": "navigation"
@@ -512,19 +520,24 @@
           "group": "navigation@6"
         },
         {
+          "command": "codebuild.clearProjectSelection",
+          "when": "view == codebuildView && codebuild.hasSelectedProjects",
+          "group": "navigation@7"
+        },
+        {
           "command": "codebuild.deployAll",
           "when": "view == codebuildView",
-          "group": "navigation@7"
+          "group": "navigation@8"
         },
         {
           "command": "codebuild.clearAllBranches",
           "when": "view == codebuildView && codebuild.hasSavedBranches",
-          "group": "navigation@8"
+          "group": "navigation@9"
         },
         {
           "command": "codebuild.clearFailedBuilds",
           "when": "view == codebuildView && codebuild.hasFailedBuilds",
-          "group": "navigation@9"
+          "group": "navigation@10"
         }
       ],
       "editor/title": [
@@ -542,6 +555,11 @@
           "type": "boolean",
           "default": false,
           "description": "Expose BuildCompanion operations (trigger a build; list projects; get build status; list recent build history) as VS Code Language Model Tools that compatible AI agents (e.g. GitHub Copilot Chat agent mode) can discover and call. Off by default: tool input/output (project names, build status, branch names) can be sent to the configured chat model backend, which is a new boundary beyond this extension's existing AWS-only communication - see the README's Privacy & Telemetry section before enabling. Builds triggered this way still go through the same confirmation, AWS permissions, and destructive-action safeguards as builds triggered from the tree view. VS Code's own 'Always Allow'/'Allow all'/organization auto-approve settings can suppress the per-call confirmation dialog for these tools; this extension cannot override that."
+        },
+        "codebuild.agentTools.requireExplicitScopeForBuilds": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require AI agents to name the AWS profile and region explicitly when triggering a build, instead of using your current BuildCompanion selection. Off by default: agents use the profile and region you already selected, and the confirmation dialog shows that exact scope before anything starts. Turn this on if you want the agent to always ask you which account and region to build in. Read-only tools (list projects, build status, build history) always fall back to your selection."
         },
         "codebuild.monitor.adaptivePolling": {
           "type": "boolean",
