@@ -359,6 +359,12 @@ Adaptive interval (when enabled):
 - active builds 9 to 20: base + 3000 ms (default 8000 ms)
 - active builds >= 21: max clamp (15000 ms)
 
+Unfocused window (applies whether or not adaptive polling is enabled):
+
+- While no VS Code window is focused, the interval above is multiplied by 3, capped at 30000 ms (default: 15000 ms).
+- Regaining focus restores the normal interval and polls immediately; losing focus just waits for the next, longer tick.
+- Open log panels are not slowed down, since they may be watched on another screen.
+
 Concurrency:
 
 - Max concurrent status checks setting default: 6
@@ -474,7 +480,7 @@ Invalid when branch:
 - **Retention TTL (`codebuild.logsViewer.ttlMinutes`, default `15`)**: once a stream ends (build finished, full log loaded, streaming stopped or failed), its lines are kept for the TTL and then dropped from memory; an open panel then shows an "expired" notice with a `Reload logs` button. The TTL counts from the end of the stream, never from its start, so long builds are not cut off.
 - Re-opening logs for a build that is still streaming, or that finished within the TTL, just reveals the existing panel (or re-creates it from the cached lines if it was closed) without refetching. Otherwise (stopped, failed, expired) it starts a fresh stream. Closing a panel that is still streaming aborts that build's log stream (via `AbortController`) and drops its lines immediately, so no further CloudWatch API calls are made for it.
 - When a build fails, the panel's final banner includes the extracted failure summary.
-- The same log lines are still written to the shared `BuildCompanion` output channel (unchanged behavior); the output channel is no longer force-shown/focused when logs are opened.
+- Streamed log lines are not copied into the shared `BuildCompanion` output channel by default; set `codebuild.logsViewer.mirrorToOutputChannel` to `true` to restore that. Failure summaries and streaming status lines are always written there. The output channel is not force-shown/focused when logs are opened.
 - Before display (and before being written to the output channel), every log message is sanitized via `sanitizeLogMessageForDisplay`: ANSI color/cursor escape codes are stripped, carriage-return progress-bar overwrites (e.g. `docker pull`, `npm`, `pip` progress bars) are collapsed to their final rendered line, and any other stray C0 control character is dropped (tabs are preserved). This prevents colorized/progress-reporting build tool output from rendering as unreadable control-character glyphs.
 
 ### Full Log Snapshot (`codebuild.viewFullLogs`)
@@ -610,8 +616,11 @@ No-profile message:
 | `codebuild.performanceDiagnostics.enabled` | boolean | `false` | n/a | Periodic monitor performance logs |
 | `codebuild.logging.maxOutputLines` | integer | `8000` | `0` or `>=1000` | Output history truncation threshold |
 | `codebuild.logging.verbose` | boolean | `false` | n/a | Redaction toggle for identifiers |
-| `codebuild.logsViewer.maxLines` | integer | `10000` | `>=500` | Per-build log viewer line-retention cap before truncation |
+| `codebuild.logsViewer.maxLines` | integer | `10000` | `>=500` | Live log panel line-retention cap before truncation |
 | `codebuild.logsViewer.maxFullLogLines` | integer | `50000` | `>=1000` | Safety cap on total lines fetched by "View Full Log" |
+| `codebuild.logsViewer.ttlMinutes` | integer | `15` | `1..1440` | How long a finished log session's lines are kept before being dropped |
+| `codebuild.logsViewer.openIn` | string | `"editor"` | `editor`/`window` | Open log panels as tabs, or directly in their own window |
+| `codebuild.logsViewer.mirrorToOutputChannel` | boolean | `false` | n/a | Also copy every streamed log line into the output channel |
 | `codebuild.batchDeploy.maxSelectedProjects` | integer | `25` | `1..100` | Maximum projects selectable at once for a batch deployment |
 | `codebuild.localTimeZone` | string | `""` | valid IANA zone or empty | Overrides auto-detected system timezone used for the "Local" build time display; falls back to auto-detect on empty/invalid value |
 

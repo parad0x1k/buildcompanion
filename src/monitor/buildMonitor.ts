@@ -30,6 +30,40 @@ const POLL_INTERVAL_CONFIG_KEY = "monitor.pollIntervalMs";
 const MAX_CONCURRENT_STATUS_CHECKS_CONFIG_KEY = "monitor.maxConcurrentStatusChecks";
 const PERFORMANCE_DIAGNOSTICS_ENABLED_KEY = "performanceDiagnostics.enabled";
 
+// While no VS Code window is focused nobody is looking at the tree, so status checks slow down
+// by this factor (capped) to cut AWS calls and throttling risk. Regaining focus polls at once.
+const UNFOCUSED_POLL_MULTIPLIER = 3;
+const MAX_UNFOCUSED_POLL_INTERVAL_MS = 30000;
+
+/**
+ * Interval between active-build status checks. Adaptive polling stretches the base interval as
+ * more builds run concurrently; an unfocused window stretches it further.
+ */
+export function resolveMonitorPollIntervalMs(input: {
+    baseIntervalMs: number;
+    activeBuildCount: number;
+    adaptivePolling: boolean;
+    windowFocused: boolean;
+}): number {
+    let intervalMs = input.baseIntervalMs;
+
+    if (input.adaptivePolling) {
+        if (input.activeBuildCount > 20) {
+            intervalMs = MAX_POLL_INTERVAL_MS;
+        } else if (input.activeBuildCount > 8) {
+            intervalMs = Math.min(MAX_POLL_INTERVAL_MS, intervalMs + 3000);
+        } else if (input.activeBuildCount > 2) {
+            intervalMs = Math.min(MAX_POLL_INTERVAL_MS, intervalMs + 1000);
+        }
+    }
+
+    if (!input.windowFocused) {
+        intervalMs = Math.max(intervalMs, Math.min(MAX_UNFOCUSED_POLL_INTERVAL_MS, intervalMs * UNFOCUSED_POLL_MULTIPLIER));
+    }
+
+    return intervalMs;
+}
+
 function formatBranchForNotification(branch?: string): string {
     const normalizedBranch = branch?.trim();
     return normalizedBranch && normalizedBranch.length > 0 ? normalizedBranch : "default source version";
@@ -54,6 +88,7 @@ export class BuildMonitor implements vscode.Disposable {
     private readonly scopePollBackoffUntilMs = new Map<string, number>();
     private readonly storeRefreshSubscription: vscode.Disposable;
     private readonly configurationSubscription: vscode.Disposable;
+    private readonly windowStateSubscription: vscode.Disposable;
     private adaptivePollingEnabled = true;
     private maxConcurrentStatusChecks = DEFAULT_MAX_CONCURRENT_STATUS_CHECKS;
     private diagnosticsEnabled = false;
@@ -83,6 +118,12 @@ export class BuildMonitor implements vscode.Disposable {
         this.storeRefreshSubscription = this.store.onDidRefresh(() => {
             this.reconcilePollingState();
         });
+
+        // Focus changes the interval (see resolveMonitorPollIntervalMs); reconciling restarts the
+        // timer at the new interval and, on regaining focus, runs a tick immediately.
+        this.windowStateSubscription = vscode.window.onDidChangeWindowState(() => {
+            this.reconcilePollingState();
+        });
     }
 
     public start(): void {
@@ -97,6 +138,7 @@ export class BuildMonitor implements vscode.Disposable {
         this.disposed = true;
         this.configurationSubscription.dispose();
         this.storeRefreshSubscription.dispose();
+        this.windowStateSubscription.dispose();
         this.stop();
     }
 
@@ -151,24 +193,12 @@ export class BuildMonitor implements vscode.Disposable {
     }
 
     private resolvePollIntervalMs(state: Readonly<ReturnType<AppStore["getState"]>>): number {
-        if (!this.adaptivePollingEnabled) {
-            return this.pollIntervalMs;
-        }
-
-        const activeBuildCount = state.activeBuilds.length;
-        if (activeBuildCount <= 2) {
-            return this.pollIntervalMs;
-        }
-
-        if (activeBuildCount <= 8) {
-            return Math.min(MAX_POLL_INTERVAL_MS, this.pollIntervalMs + 1000);
-        }
-
-        if (activeBuildCount <= 20) {
-            return Math.min(MAX_POLL_INTERVAL_MS, this.pollIntervalMs + 3000);
-        }
-
-        return MAX_POLL_INTERVAL_MS;
+        return resolveMonitorPollIntervalMs({
+            baseIntervalMs: this.pollIntervalMs,
+            activeBuildCount: state.activeBuilds.length,
+            adaptivePolling: this.adaptivePollingEnabled,
+            windowFocused: vscode.window.state.focused
+        });
     }
 
     private maybeLogDiagnostics(summary: string): void {
@@ -191,6 +221,7 @@ export class BuildMonitor implements vscode.Disposable {
             return;
         }
 
+        const previousPollIntervalMs = this.timer ? this.currentPollIntervalMs : null;
         if (this.timer) {
             clearInterval(this.timer);
         }
@@ -200,7 +231,11 @@ export class BuildMonitor implements vscode.Disposable {
             this.runTick();
         }, nextPollIntervalMs);
 
-        this.runTick();
+        // Poll right away when polling starts or speeds up (e.g. the window regained focus); a
+        // slow-down (window lost focus) just waits for the next, longer interval.
+        if (previousPollIntervalMs === null || nextPollIntervalMs < previousPollIntervalMs) {
+            this.runTick();
+        }
     }
 
     /**

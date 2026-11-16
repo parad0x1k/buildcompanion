@@ -58,6 +58,39 @@ describe("command registration", () => {
         assert.ok(listAwsProfilesStub.called, "listAwsProfiles should be invoked during initialization");
     });
 
+    it("starts active-build reconciliation without waiting for the project listing to finish", async () => {
+        listAwsProfilesStub.resolves([{ name: "dev", region: "us-east-1" }]);
+
+        let releaseProjects: () => void = () => undefined;
+        listCodeBuildProjectsStub.callsFake(() => new Promise((resolve) => {
+            releaseProjects = () => resolve([{ name: "demo" }]);
+        }));
+        listRecentActiveBuildsStub.resolves([
+            { id: "demo:1", projectName: "demo", status: "IN_PROGRESS", profile: "dev", region: "us-east-1" }
+        ]);
+
+        const store = createAppStore({ currentRegion: "us-east-1" });
+        const context = createFakeExtensionContext();
+
+        try {
+            const initialization = initializeCommandState(context, store);
+
+            // Let profile discovery settle; the project listing is still pending at this point.
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            assert.equal(listCodeBuildProjectsStub.callCount, 1);
+            assert.equal(listRecentActiveBuildsStub.callCount, 1, "active builds should be queried in parallel with projects");
+
+            releaseProjects();
+            await initialization;
+
+            assert.deepEqual(store.getState().projects, [{ name: "demo" }]);
+            assert.equal(store.getState().activeBuilds.length, 1);
+        } finally {
+            disposeFakeExtensionContext(context);
+            store.dispose();
+        }
+    });
+
     it("does not query project/build APIs when no AWS profiles are configured", async () => {
         const store = createAppStore();
         const context = createFakeExtensionContext();

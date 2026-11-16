@@ -43,6 +43,11 @@ export type ActiveBatchDeployment = {
 
 export type RefreshProfilesOptions = {
     interactiveFailurePrompt?: boolean;
+    /**
+     * Called once the profile and region are chosen, just before projects are listed, so callers
+     * can start independent per-scope AWS work in parallel with the project listing.
+     */
+    onScopeResolved?: (profile: string, region: string) => void;
 };
 
 export function createBatchCancellationController(): BatchCancellationController {

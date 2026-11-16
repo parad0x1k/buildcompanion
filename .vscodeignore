@@ -35,6 +35,7 @@ deps-top.txt
 # Unused resource image variants (only resources/marketplace-icon.png and resources/codebuild.svg are referenced)
 resources/marketplace-icon.svg
 resources/marketplace-icon1.png
+resources/codebuild-original.svg
 resources/Media.jpeg
 resources/icon-drafts/
 
@@ -42,6 +43,8 @@ resources/icon-drafts/
 resources/gifs/
 
 # Dev tooling
+esbuild.js
+.vscode-test.mjs
 .eslintrc*
 .prettierrc*
 .editorconfig

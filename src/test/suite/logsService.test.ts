@@ -3,6 +3,7 @@ import * as sinon from "sinon";
 import { BatchGetBuildsCommand } from "@aws-sdk/client-codebuild";
 import { GetLogEventsCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { fetchFullBuildLog, isLogStreamingCancellationError, sanitizeLogMessageForDisplay, streamBuildLogs } from "../../aws/logsService";
+import * as outputChannelManager from "../../logging/outputChannelManager";
 import { codeBuildMock, cloudWatchLogsMock } from "../awsMocks";
 
 describe("aws/logsService", () => {
@@ -237,6 +238,73 @@ describe("aws/logsService", () => {
             );
 
             await resultPromise;
+        });
+    });
+
+    describe("streamBuildLogs output channel mirroring", () => {
+        let clock: sinon.SinonFakeTimers;
+        let logInfoStub: sinon.SinonStub;
+
+        beforeEach(() => {
+            codeBuildMock.reset();
+            cloudWatchLogsMock.reset();
+            clock = sinon.useFakeTimers();
+            logInfoStub = sinon.stub(outputChannelManager, "logInfo");
+
+            codeBuildMock.on(BatchGetBuildsCommand).resolves({
+                builds: [{
+                    id: "demo:123",
+                    projectName: "demo",
+                    buildStatus: "SUCCEEDED",
+                    logs: { groupName: "/aws/codebuild/demo", streamName: "demo-stream" }
+                }]
+            });
+            cloudWatchLogsMock
+                .on(GetLogEventsCommand)
+                .resolvesOnce({
+                    events: [{ timestamp: 1000, message: "compiling module-a" }, { timestamp: 1001, message: "compiling module-b" }],
+                    nextForwardToken: "token-a"
+                })
+                .resolves({ events: [], nextForwardToken: "token-a" });
+        });
+
+        afterEach(() => {
+            logInfoStub.restore();
+            clock.restore();
+        });
+
+        async function runStream(options: { mirrorToOutputChannel?: boolean }): Promise<string[]> {
+            const viewerLines: string[] = [];
+            const streamPromise = streamBuildLogs("dev", "us-east-1", "demo:123", {
+                pollIntervalMs: 2000,
+                onLogLines: (lines) => viewerLines.push(...lines),
+                ...options
+            });
+
+            for (let i = 0; i < 4; i += 1) {
+                await clock.tickAsync(2000);
+            }
+            await streamPromise;
+            return viewerLines;
+        }
+
+        function mirroredBuildLines(): string[] {
+            return logInfoStub.getCalls()
+                .map((call) => String(call.args[0]))
+                .filter((message) => message.includes("compiling module-"));
+        }
+
+        it("does not copy streamed lines into the output channel by default", async () => {
+            const viewerLines = await runStream({});
+
+            assert.equal(viewerLines.length, 2, "the log panel must still receive every line");
+            assert.deepEqual(mirroredBuildLines(), []);
+        });
+
+        it("copies streamed lines into the output channel when mirroring is enabled", async () => {
+            await runStream({ mirrorToOutputChannel: true });
+
+            assert.equal(mirroredBuildLines().length, 2);
         });
     });
 });

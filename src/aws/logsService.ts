@@ -100,8 +100,18 @@ export type LogsServiceOptions = CodeBuildServiceOptions & {
     onLogLines?: (lines: string[]) => void;
     /** Called once streaming ends normally (build reached a terminal state), with its final status. */
     onComplete?: (status: BuildStatus) => void;
+    /**
+     * Also copy every streamed line into the shared output channel. Defaults to the
+     * `codebuild.logsViewer.mirrorToOutputChannel` setting (off): the log panel is the reading
+     * surface, and mirroring doubles per-line work and memory while flooding the diagnostic channel.
+     */
+    mirrorToOutputChannel?: boolean;
     signal?: AbortSignal;
 };
+
+function isLogMirroringEnabled(): boolean {
+    return vscode.workspace.getConfiguration("codebuild").get<boolean>("logsViewer.mirrorToOutputChannel", false);
+}
 
 function sleep(delayMs: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
@@ -221,7 +231,7 @@ function formatLogLines(
     const prefix = timestamp ? `[${new Date(timestamp).toISOString()}] ` : "";
     const lines = sanitizedMessage.split("\n");
     const formattedLines: string[] = [];
-    const mirrorToOutputChannel = options?.mirrorToOutputChannel ?? true;
+    const mirrorToOutputChannel = options?.mirrorToOutputChannel ?? false;
 
     for (const line of lines) {
         const formattedLine = `${prefix}${line}`;
@@ -326,6 +336,8 @@ export async function streamBuildLogs(
     const pollIntervalMs = Math.max(2000, Math.min(3000, options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS));
     const maxEmptyPolls = options?.maxEmptyPolls ?? DEFAULT_MAX_EMPTY_POLLS;
     const recentLineBufferSize = Math.min(500, Math.max(50, options?.recentLineBufferSize ?? DEFAULT_RECENT_LINE_BUFFER_SIZE));
+    // Read once per stream rather than per line.
+    const mirrorToOutputChannel = options?.mirrorToOutputChannel ?? isLogMirroringEnabled();
 
     try {
         throwIfAborted(signal);
@@ -379,7 +391,7 @@ export async function streamBuildLogs(
                     for (const event of events) {
                         const rawMessage = event.message ?? "";
                         const sanitizedMessage = sanitizeLogMessageForDisplay(rawMessage);
-                        viewerLines.push(...formatLogLines(event.timestamp, sanitizedMessage));
+                        viewerLines.push(...formatLogLines(event.timestamp, sanitizedMessage, { mirrorToOutputChannel }));
 
                         for (const line of sanitizedMessage.split("\n")) {
                             const trimmed = line.trim();

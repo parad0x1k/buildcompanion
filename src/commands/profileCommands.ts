@@ -107,6 +107,7 @@ export async function refreshProfilesAndProjects(
     }
 
     store.setCurrentProfile(selectedProfile.name);
+    options.onScopeResolved?.(selectedProfile.name, activeRegion);
 
     let retryCount = 0;
     while (true) {

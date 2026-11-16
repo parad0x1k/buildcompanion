@@ -1,6 +1,6 @@
 {
   "name": "buildcompanion",
-  "version": "0.1.1",
+  "version": "0.2.1",
   "displayName": "BuildCompanion for AWS CodeBuild",
   "description": "Trigger, monitor, and debug AWS CodeBuild projects directly from VS Code",
   "main": "./dist/extension.js",
@@ -216,7 +216,10 @@
         "icon": "$(play)",
         "userDescription": "Trigger a CodeBuild build",
         "modelDescription": "Starts a new AWS CodeBuild build for the given project, using its default source version unless a branch/tag/commit is provided. This is a MUTATING operation: it runs the project's configured build steps under the project's own IAM service role, may incur AWS cost, and is not reversible from this tool (there is no stop/cancel tool). It does NOT support build-scoped overrides (environment variables, buildspec, compute image, privileged mode, timeouts) - those are intentionally never exposed to this tool; if the user needs an override, tell them to use BuildCompanion's \"Start Build with Overrides...\" command in VS Code instead. profile and region must be exact, explicit values - never guess or reuse values from earlier in the conversation without the user confirming they still apply. If a build is already in progress for the project, this returns an ALREADY_IN_PROGRESS result instead of starting a second one; ask the user how to proceed rather than retrying automatically. Requires the codebuild:StartBuild IAM permission.",
-        "tags": ["aws", "codebuild"],
+        "tags": [
+          "aws",
+          "codebuild"
+        ],
         "when": "config.codebuild.agentTools.enabled",
         "inputSchema": {
           "type": "object",
@@ -238,7 +241,11 @@
               "description": "Optional git branch, tag, or commit ID to use as the build's source version. Omit to use the project's default source version."
             }
           },
-          "required": ["profile", "region", "project_name"]
+          "required": [
+            "profile",
+            "region",
+            "project_name"
+          ]
         }
       },
       {
@@ -249,7 +256,10 @@
         "icon": "$(list-tree)",
         "userDescription": "List CodeBuild projects",
         "modelDescription": "Lists AWS CodeBuild project names visible to the given AWS profile and region. Read-only: does not start, stop, or modify anything. Requires the codebuild:ListProjects IAM permission.",
-        "tags": ["aws", "codebuild"],
+        "tags": [
+          "aws",
+          "codebuild"
+        ],
         "when": "config.codebuild.agentTools.enabled",
         "inputSchema": {
           "type": "object",
@@ -263,7 +273,10 @@
               "description": "The exact AWS region to list CodeBuild projects in."
             }
           },
-          "required": ["profile", "region"]
+          "required": [
+            "profile",
+            "region"
+          ]
         }
       },
       {
@@ -274,7 +287,10 @@
         "icon": "$(info)",
         "userDescription": "Get CodeBuild build status",
         "modelDescription": "Fetches the current status of one or more AWS CodeBuild builds by their exact build IDs (e.g. a build ID returned by the trigger_build or list_recent_builds tools). Read-only; up to 100 build IDs per call. A build ID that doesn't exist is reported individually as found: false rather than failing the whole call. Requires the codebuild:BatchGetBuilds IAM permission.",
-        "tags": ["aws", "codebuild"],
+        "tags": [
+          "aws",
+          "codebuild"
+        ],
         "when": "config.codebuild.agentTools.enabled",
         "inputSchema": {
           "type": "object",
@@ -289,13 +305,19 @@
             },
             "build_ids": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "minItems": 1,
               "maxItems": 100,
               "description": "One or more exact CodeBuild build IDs (e.g. my-project:1234abcd-...) to fetch current status for."
             }
           },
-          "required": ["profile", "region", "build_ids"]
+          "required": [
+            "profile",
+            "region",
+            "build_ids"
+          ]
         }
       },
       {
@@ -306,7 +328,10 @@
         "icon": "$(history)",
         "userDescription": "List recent build history for a project",
         "modelDescription": "Lists recent build history (most recent first) for a single AWS CodeBuild project: build ID, status, source version, start/end time, and duration. Read-only. Returns at most 100 builds per call (set limit to control how many are returned, default 20). If the result's truncated field is true, more history may exist beyond what was returned. Requires the codebuild:ListBuildsForProject and codebuild:BatchGetBuilds IAM permissions.",
-        "tags": ["aws", "codebuild"],
+        "tags": [
+          "aws",
+          "codebuild"
+        ],
         "when": "config.codebuild.agentTools.enabled",
         "inputSchema": {
           "type": "object",
@@ -331,7 +356,11 @@
               "description": "Maximum number of recent builds to return, most recent first. Capped at 100."
             }
           },
-          "required": ["profile", "region", "project_name"]
+          "required": [
+            "profile",
+            "region",
+            "project_name"
+          ]
         }
       }
     ],
@@ -578,6 +607,11 @@
           "default": 10000,
           "minimum": 500,
           "description": "Maximum number of log lines retained in a build's live log panel before older lines are dropped. Keeps the panel responsive for very large log streams. Does not apply to \"View Full Log\", which is capped by codebuild.logsViewer.maxFullLogLines instead."
+        },
+        "codebuild.logsViewer.mirrorToOutputChannel": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also copy every streamed build log line into the BuildCompanion output channel. Off by default: logs are read in the log panel, and mirroring every line costs extra CPU and memory on busy builds and pushes the extension's own diagnostic messages out of the output channel. Failure summaries and streaming status are always written to the output channel regardless."
         },
         "codebuild.logsViewer.ttlMinutes": {
           "type": "integer",

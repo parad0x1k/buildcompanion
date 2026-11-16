@@ -158,29 +158,49 @@ export async function initializeCommandState(context: vscode.ExtensionContext, s
     const startedAtMs = Date.now();
     logInfo("[RECONCILE] Starting profile/project discovery...");
 
-    await refreshProfilesAndProjects(context, store);
+    // Active-build reconciliation only needs the profile/region, not the project list, so it
+    // starts as soon as the scope is known and overlaps with project listing instead of waiting
+    // for it (the client factory shares one credential resolution between the two).
+    let activeBuildsReconciliation: Promise<void> | undefined;
+    await refreshProfilesAndProjects(context, store, {
+        onScopeResolved: (profile, region) => {
+            activeBuildsReconciliation = reconcileActiveBuilds(context, store, profile, region);
+        }
+    });
     logInfo(`[RECONCILE] Profile/project discovery finished in ${Date.now() - startedAtMs}ms`);
 
-    const state = store.getState();
-    if (!state.currentProfile) {
+    if (!activeBuildsReconciliation) {
         store.setActiveBuilds([]);
         return;
     }
 
+    await activeBuildsReconciliation;
+}
+
+async function reconcileActiveBuilds(
+    context: vscode.ExtensionContext,
+    store: AppStore,
+    profile: string,
+    region: string
+): Promise<void> {
     try {
         const activeBuildsStartedAtMs = Date.now();
-        const activeBuilds = await listRecentActiveBuilds(
-            state.currentProfile,
-            state.currentRegion,
-            50,
-            { secretStorage: context.secrets }
-        );
+        const activeBuilds = await listRecentActiveBuilds(profile, region, 50, { secretStorage: context.secrets });
+
+        // The user may have switched profile/region while this was in flight; don't overwrite
+        // the new scope's active builds with the old scope's results.
+        const state = store.getState();
+        if (state.currentProfile !== profile || state.currentRegion !== region) {
+            logInfo("[RECONCILE] Scope changed during startup reconciliation; discarding its results");
+            return;
+        }
+
         store.setActiveBuilds(activeBuilds);
         logInfo(`[RECONCILE] Active build reconciliation finished in ${Date.now() - activeBuildsStartedAtMs}ms (${activeBuilds.length} active build(s))`);
     } catch (error) {
         const message = getUserFriendlyErrorMessage(error, {
-            profile: state.currentProfile,
-            region: state.currentRegion,
+            profile,
+            region,
             operation: "Startup build reconciliation"
         });
         logError(`[RECONCILE] ${sanitizeLogValue(message)}`);

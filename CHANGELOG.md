@@ -4,6 +4,15 @@ All notable changes to BuildCompanion for AWS CodeBuild are documented in this f
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-11-17
+
+### Performance
+- Streamed build log lines are no longer copied one by one into the `BuildCompanion` output channel. Each copied line re-read the extension settings and was written to the channel synchronously, so a busy CloudWatch page (up to 10,000 lines) briefly blocked the shared extension host, held every line in memory twice, and pushed the extension's own diagnostic messages out of the channel. The log panel is the reading surface now; the old behavior is available via the new `codebuild.logsViewer.mirrorToOutputChannel` setting (off by default). Failure summaries and streaming status still go to the output channel.
+- Logging settings (`codebuild.logging.verbose`, `codebuild.logging.maxOutputLines`) are read once and refreshed only when they change, instead of on every log line and every redacted identifier.
+- Active-build status polling slows down 3x (capped at 30 seconds) while no VS Code window is focused, and polls immediately when focus returns. Open log panels keep streaming at full speed.
+- Startup active-build reconciliation now runs in parallel with the project listing instead of after it, saving one AWS round-trip of startup latency. Results are discarded if the profile or region changed while they were in flight.
+- The packaged VSIX no longer includes dev-only files (`esbuild.js`, `.vscode-test.mjs`, an unused icon).
+
 ### Fixed
 - Expired AWS client cache entries (older than the 5-minute TTL) were dropped from the cache without calling `destroy()`, leaving their keep-alive sockets open until they idled out. Clients that leave the cache through TTL expiry, LRU eviction or replacement are now destroyed after a 60-second grace period, so a request still in flight on that client (e.g. a build-log tail that holds one client for the whole build) is not reset.
 - Concurrent callers that all missed the AWS client cache (batch deploy, per-scope polling, parallel agent tool calls) each resolved credentials and built their own client; all but the last were overwritten in the cache and never destroyed. Creation is now single-flight per profile/region/FIPS key, so they share one client and one credential resolution. A creation that is overtaken by `clearAwsClientCache()` (e.g. temporary credentials being set while a poll is resolving) no longer writes its stale client into the freshly cleared cache.
