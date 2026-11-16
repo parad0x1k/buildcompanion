@@ -2,11 +2,17 @@ import { CodeBuildClient } from "@aws-sdk/client-codebuild";
 import { CloudWatchLogsClient } from "@aws-sdk/client-cloudwatch-logs";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import * as vscode from "vscode";
+import type { AwsCredentialIdentityProvider } from "@aws-sdk/types";
 import { resolveAwsCredentials } from "./credentials";
 
 const MAX_CLIENT_CACHE_SIZE = 16;
 const CLIENT_CACHE_TTL_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 30_000;
+// How long a client that left the cache (TTL expiry, LRU eviction, replacement) stays usable before
+// its sockets are closed. destroy() tears down every socket on the client's agent, including ones
+// mid-request, and callers such as log tailing hold a single client for an entire build. Waiting
+// two request timeouts lets anything already in flight finish or time out first.
+const RETIRED_CLIENT_GRACE_MS = REQUEST_TIMEOUT_MS * 2;
 
 type ClientCacheEntry<TClient> = {
     client: TClient;
@@ -15,6 +21,18 @@ type ClientCacheEntry<TClient> = {
 
 const codeBuildClientCache = new Map<string, ClientCacheEntry<CodeBuildClient>>();
 const cloudWatchLogsClientCache = new Map<string, ClientCacheEntry<CloudWatchLogsClient>>();
+
+// One in-flight creation per cache key. Without this, N concurrent callers that all miss the cache
+// (batch deploy, the monitor's per-scope polling, parallel agent tool calls) each resolve
+// credentials (an SSO/STS round-trip) and build their own client with its own socket pool; every
+// one but the last to finish is then silently overwritten in the cache and never destroyed.
+const codeBuildInFlight = new Map<string, Promise<CodeBuildClient>>();
+const cloudWatchLogsInFlight = new Map<string, Promise<CloudWatchLogsClient>>();
+
+// Bumped by clearAwsClientCache(). A creation that started before a clear may finish after it; it
+// must not write its (possibly stale-credential) client into the freshly cleared cache, where it
+// would also overwrite a newer client and leak it.
+let cacheGeneration = 0;
 
 export type CreateCodeBuildClientOptions = {
     secretStorage?: vscode.SecretStorage;
@@ -54,6 +72,8 @@ function getCachedClient<TClient>(
 
     if (Date.now() - cached.createdAtMs > CLIENT_CACHE_TTL_MS) {
         cache.delete(key);
+        // Close the expired client's keep-alive sockets, but only after in-flight requests are done.
+        retireClient(cached.client);
         return undefined;
     }
 
@@ -71,11 +91,22 @@ function destroyClientIfPossible<TClient>(client: TClient): void {
     }
 }
 
+function retireClient<TClient>(client: TClient): void {
+    const timer = setTimeout(() => destroyClientIfPossible(client), RETIRED_CLIENT_GRACE_MS);
+    // Never keep the extension host alive just to close sockets; they die with the process anyway.
+    timer.unref?.();
+}
+
 function setCachedClient<TClient>(
     cache: Map<string, ClientCacheEntry<TClient>>,
     key: string,
     client: TClient
 ): void {
+    const replaced = cache.get(key);
+    if (replaced && replaced.client !== client) {
+        retireClient(replaced.client);
+    }
+
     cache.set(key, {
         client,
         createdAtMs: Date.now()
@@ -91,12 +122,15 @@ function setCachedClient<TClient>(
         const evicted = cache.get(oldestKey);
         cache.delete(oldestKey);
         if (evicted) {
-            destroyClientIfPossible(evicted.client);
+            retireClient(evicted.client);
         }
     }
 }
 
 export function clearAwsClientCache(): void {
+    // Explicit clears (credentials changed, extension deactivating) close sockets immediately.
+    cacheGeneration += 1;
+
     for (const entry of codeBuildClientCache.values()) {
         destroyClientIfPossible(entry.client);
     }
@@ -106,6 +140,67 @@ export function clearAwsClientCache(): void {
         destroyClientIfPossible(entry.client);
     }
     cloudWatchLogsClientCache.clear();
+    codeBuildInFlight.clear();
+    cloudWatchLogsInFlight.clear();
+}
+
+type ClientKind = "CodeBuild" | "CloudWatch Logs";
+
+async function getOrCreateClient<TClient>(
+    kind: ClientKind,
+    cache: Map<string, ClientCacheEntry<TClient>>,
+    inFlight: Map<string, Promise<TClient>>,
+    profile: string,
+    region: string,
+    options: CreateCodeBuildClientOptions | undefined,
+    create: (config: { region: string; credentials: AwsCredentialIdentityProvider; useFips: boolean }) => TClient
+): Promise<TClient> {
+    if (!profile?.trim()) {
+        throw new Error(`AWS profile is required to create ${kind} client`);
+    }
+
+    if (!region?.trim()) {
+        throw new Error(`AWS region is required to create ${kind} client`);
+    }
+
+    const useFips = shouldUseFipsEndpoint();
+    const cacheKey = buildClientCacheKey(profile, region, useFips);
+    const cachedClient = getCachedClient(cache, cacheKey);
+    if (cachedClient) {
+        return cachedClient;
+    }
+
+    const pending = inFlight.get(cacheKey);
+    if (pending) {
+        return pending;
+    }
+
+    const generation = cacheGeneration;
+    const creation = (async () => {
+        const credentials = await resolveAwsCredentials(profile, {
+            secretStorage: options?.secretStorage
+        });
+
+        const client = create({ region, credentials, useFips });
+        if (generation === cacheGeneration) {
+            setCachedClient(cache, cacheKey, client);
+        } else {
+            // The cache was cleared while credentials were resolving. Hand this client to the
+            // callers that asked before the clear, but keep it out of the cache and close it later.
+            retireClient(client);
+        }
+        return client;
+    })();
+
+    inFlight.set(cacheKey, creation);
+    try {
+        return await creation;
+    } finally {
+        // Only clear our own entry; clearAwsClientCache() may already have dropped it.
+        if (inFlight.get(cacheKey) === creation) {
+            inFlight.delete(cacheKey);
+        }
+    }
 }
 
 export async function createCodeBuildClient(
@@ -113,34 +208,20 @@ export async function createCodeBuildClient(
     region: string,
     options?: CreateCodeBuildClientOptions
 ): Promise<CodeBuildClient> {
-    if (!profile?.trim()) {
-        throw new Error("AWS profile is required to create CodeBuild client");
-    }
-
-    if (!region?.trim()) {
-        throw new Error("AWS region is required to create CodeBuild client");
-    }
-
-    const useFips = shouldUseFipsEndpoint();
-    const cacheKey = buildClientCacheKey(profile, region, useFips);
-    const cachedClient = getCachedClient(codeBuildClientCache, cacheKey);
-    if (cachedClient) {
-        return cachedClient;
-    }
-
-    const credentials = await resolveAwsCredentials(profile, {
-        secretStorage: options?.secretStorage
-    });
-
-    const client = new CodeBuildClient({
+    return getOrCreateClient(
+        "CodeBuild",
+        codeBuildClientCache,
+        codeBuildInFlight,
+        profile,
         region,
-        credentials,
-        useFipsEndpoint: useFips,
-        requestHandler: new NodeHttpHandler({ requestTimeout: REQUEST_TIMEOUT_MS })
-    });
-
-    setCachedClient(codeBuildClientCache, cacheKey, client);
-    return client;
+        options,
+        ({ region: clientRegion, credentials, useFips }) => new CodeBuildClient({
+            region: clientRegion,
+            credentials,
+            useFipsEndpoint: useFips,
+            requestHandler: new NodeHttpHandler({ requestTimeout: REQUEST_TIMEOUT_MS })
+        })
+    );
 }
 
 export async function createCloudWatchLogsClient(
@@ -148,32 +229,18 @@ export async function createCloudWatchLogsClient(
     region: string,
     options?: CreateCodeBuildClientOptions
 ): Promise<CloudWatchLogsClient> {
-    if (!profile?.trim()) {
-        throw new Error("AWS profile is required to create CloudWatch Logs client");
-    }
-
-    if (!region?.trim()) {
-        throw new Error("AWS region is required to create CloudWatch Logs client");
-    }
-
-    const useFips = shouldUseFipsEndpoint();
-    const cacheKey = buildClientCacheKey(profile, region, useFips);
-    const cachedClient = getCachedClient(cloudWatchLogsClientCache, cacheKey);
-    if (cachedClient) {
-        return cachedClient;
-    }
-
-    const credentials = await resolveAwsCredentials(profile, {
-        secretStorage: options?.secretStorage
-    });
-
-    const client = new CloudWatchLogsClient({
+    return getOrCreateClient(
+        "CloudWatch Logs",
+        cloudWatchLogsClientCache,
+        cloudWatchLogsInFlight,
+        profile,
         region,
-        credentials,
-        useFipsEndpoint: useFips,
-        requestHandler: new NodeHttpHandler({ requestTimeout: REQUEST_TIMEOUT_MS })
-    });
-
-    setCachedClient(cloudWatchLogsClientCache, cacheKey, client);
-    return client;
+        options,
+        ({ region: clientRegion, credentials, useFips }) => new CloudWatchLogsClient({
+            region: clientRegion,
+            credentials,
+            useFipsEndpoint: useFips,
+            requestHandler: new NodeHttpHandler({ requestTimeout: REQUEST_TIMEOUT_MS })
+        })
+    );
 }
