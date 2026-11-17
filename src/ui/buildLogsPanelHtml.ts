@@ -4,9 +4,9 @@
  * nothing a build prints can execute in the panel.
  *
  * Protocol (extension → webview):
- *   init   { header, lines, maxLines, truncatedCount, phase, footer, buildStatus, ttlMinutes, expiresInMs }
+ *   init   { header, lines, maxLines, truncatedCount, phase, footer, buildStatus, waitingMessage, ttlMinutes, expiresInMs }
  *   append { lines, maxLines, truncatedCount }
- *   state  { phase, footer, buildStatus, ttlMinutes, expiresInMs, poppedOut }
+ *   state  { phase, footer, buildStatus, waitingMessage, ttlMinutes, expiresInMs, poppedOut }
  * Protocol (webview → extension):
  *   ready
  *   command { command: "fullLog" | "reload" | "copy" | "popOut" }
@@ -374,7 +374,9 @@ export function renderBuildLogsPanelHtml(cspSource: string, nonce: string): stri
             footer.appendChild(reload);
         }
 
-        $("empty").textContent = phase === "streaming" ? "Waiting for log output…" : "No log output.";
+        $("empty").textContent = phase === "streaming"
+            ? (message.waitingMessage || "Waiting for log output…")
+            : "No log output.";
         renderRetention();
         if (follow) { scrollToEnd(); }
     }

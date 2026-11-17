@@ -133,6 +133,63 @@ describe("aws/logsService", () => {
             assert.equal(result.truncated, false);
         });
 
+        it("waits for a queued build to start writing logs instead of failing or returning nothing", async () => {
+            const notFound = Object.assign(new Error("The specified log stream does not exist."), {
+                name: "ResourceNotFoundException"
+            });
+            codeBuildMock
+                .on(BatchGetBuildsCommand)
+                // Initial resolution: still queued, no log location assigned yet.
+                .resolvesOnce({ builds: [{ id: "demo:123", projectName: "demo", buildStatus: "IN_PROGRESS", currentPhase: "QUEUED" }] })
+                // Provisioning: stream is named but not yet created in CloudWatch.
+                .resolves({
+                    builds: [{
+                        id: "demo:123",
+                        projectName: "demo",
+                        buildStatus: "IN_PROGRESS",
+                        currentPhase: "PROVISIONING",
+                        logs: { groupName: "/aws/codebuild/demo", streamName: "demo-stream" }
+                    }]
+                });
+            cloudWatchLogsMock
+                .on(GetLogEventsCommand)
+                .rejectsOnce(notFound)
+                .rejectsOnce(notFound)
+                // Stream created, still empty.
+                .resolvesOnce({ events: [], nextForwardToken: "token-a" })
+                .resolvesOnce({ events: [{ timestamp: 1000, message: "Entering phase DOWNLOAD_SOURCE" }], nextForwardToken: "token-b" })
+                .resolves({ events: [], nextForwardToken: "token-b" });
+
+            const waitingMessages: string[] = [];
+            const receivedLines: string[] = [];
+            const result = await fetchFullBuildLog("dev", "us-east-1", "demo:123", {
+                pollIntervalMs: 1,
+                onWaiting: (message) => waitingMessages.push(message),
+                onLines: (lines) => receivedLines.push(...lines)
+            });
+
+            assert.equal(result.totalLines, 1);
+            assert.ok(receivedLines[0]?.includes("Entering phase DOWNLOAD_SOURCE"));
+            assert.ok(waitingMessages.some((message) => message.includes("queued")));
+            assert.ok(waitingMessages.some((message) => message.includes("Provisioning")));
+        });
+
+        it("fails fast when CloudWatch logging is disabled for the build", async () => {
+            codeBuildMock.on(BatchGetBuildsCommand).resolves({
+                builds: [{
+                    id: "demo:123",
+                    projectName: "demo",
+                    buildStatus: "IN_PROGRESS",
+                    logs: { cloudWatchLogs: { status: "DISABLED" } }
+                }]
+            });
+
+            await assert.rejects(
+                () => fetchFullBuildLog("dev", "us-east-1", "demo:123", { pollIntervalMs: 1 }),
+                /CloudWatch logging is disabled/
+            );
+        });
+
         it("requires a non-empty profile, region, and build id", async () => {
             await assert.rejects(() => fetchFullBuildLog("", "us-east-1", "demo:123"));
             await assert.rejects(() => fetchFullBuildLog("dev", "", "demo:123"));
@@ -238,6 +295,63 @@ describe("aws/logsService", () => {
             );
 
             await resultPromise;
+        });
+    });
+
+    describe("streamBuildLogs before the build has started", () => {
+        let clock: sinon.SinonFakeTimers;
+
+        beforeEach(() => {
+            codeBuildMock.reset();
+            cloudWatchLogsMock.reset();
+            clock = sinon.useFakeTimers();
+        });
+
+        afterEach(() => {
+            clock.restore();
+        });
+
+        it("keeps waiting past the old 2-minute cutoff for a queued build, then streams once its logs exist", async () => {
+            const queued = { builds: [{ id: "demo:123", projectName: "demo", buildStatus: "IN_PROGRESS", currentPhase: "QUEUED" }] };
+            const running = {
+                builds: [{
+                    id: "demo:123",
+                    projectName: "demo",
+                    buildStatus: "IN_PROGRESS",
+                    currentPhase: "BUILD",
+                    logs: { groupName: "/aws/codebuild/demo", streamName: "demo-stream" }
+                }]
+            };
+            let started = false;
+            codeBuildMock.on(BatchGetBuildsCommand).callsFake(() => (started ? running : queued));
+            cloudWatchLogsMock
+                .on(GetLogEventsCommand)
+                .resolvesOnce({ events: [{ timestamp: 1000, message: "hello from the build" }], nextForwardToken: "token-a" })
+                .resolves({ events: [], nextForwardToken: "token-a" });
+
+            const controller = new AbortController();
+            const waitingMessages: string[] = [];
+            const viewerLines: string[] = [];
+            const streamPromise = streamBuildLogs("dev", "us-east-1", "demo:123", {
+                signal: controller.signal,
+                pollIntervalMs: 2000,
+                onWaiting: (message) => waitingMessages.push(message),
+                onLogLines: (lines) => viewerLines.push(...lines)
+            });
+            const settled = streamPromise.catch((error: unknown) => error);
+
+            // Three minutes in the queue - longer than the previous hard-coded timeout.
+            await clock.tickAsync(180_000);
+            assert.equal(viewerLines.length, 0);
+            assert.ok(waitingMessages.some((message) => message.includes("queued")));
+
+            started = true;
+            await clock.tickAsync(4000);
+            assert.ok(viewerLines.some((line) => line.includes("hello from the build")));
+
+            controller.abort();
+            await clock.tickAsync(0);
+            assert.ok(isLogStreamingCancellationError(await settled));
         });
     });
 

@@ -157,6 +157,19 @@ describe("ui/buildLogsPanel", () => {
             assert.deepEqual(snapshot?.lines, ["cached line"]);
         });
 
+        it("refetches a full-log snapshot that was taken while the build was still running", async () => {
+            createManager({ getTtlMs: () => 60_000 });
+            const fullHeader = header({ mode: "full" });
+            const first = await manager.open(fullHeader, { unbounded: true });
+            first.handle.finish("complete", "End of full log (0 line(s)).", "IN_PROGRESS");
+
+            const second = await manager.open(fullHeader, { unbounded: true });
+
+            assert.equal(second.reused, false);
+            assert.equal(first.handle.isCurrent(), false);
+            assert.equal(manager.getSnapshot(second.handle.key)?.phase, "streaming");
+        });
+
         it("stops the stream and discards the session when a streaming panel is closed", async () => {
             createManager();
             const { handle } = await manager.open(header());

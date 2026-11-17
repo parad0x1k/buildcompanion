@@ -4,6 +4,11 @@ All notable changes to BuildCompanion for AWS CodeBuild are documented in this f
 
 ## [Unreleased]
 
+### Fixed
+- Opening **View Logs** or **View Full Log** before CodeBuild had started writing logs (build still queued or provisioning) no longer fails. The live log view gave up after 2 minutes waiting for a log location, so a build that sat in the queue longer never streamed. The full log view retried a missing stream for about 7 seconds before failing, or returned an empty "complete" snapshot that re-opening kept showing. Both views now wait for the build's first log output for as long as the panel is open, and show why they are waiting (queued / provisioning). A build whose project has CloudWatch logging disabled fails right away with that reason.
+- Re-opening **View Full Log** for a build that was still running when its snapshot was taken now fetches a fresh snapshot instead of showing the stale one.
+- Log viewer errors raised by the extension itself (for example "log stream is unavailable for this build") were replaced with a generic "check AWS configuration" message. They are now shown as written.
+
 ## [0.2.1] — 2026-11-17
 
 ### Performance

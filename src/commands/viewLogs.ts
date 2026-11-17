@@ -104,6 +104,7 @@ export async function viewLogs(
         {
             secretStorage: context.secrets,
             signal: abortController.signal,
+            onWaiting: (message: string) => handle.setWaitingMessage(message),
             onLogLines: (lines: string[]) => handle.appendLines(lines),
             onComplete: (status) => {
                 handle.finish(

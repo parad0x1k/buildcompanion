@@ -67,6 +67,8 @@ export interface BuildLogsSessionHandle {
     isCurrent(): boolean;
     registerCanceller(cancel: () => void): void;
     appendLines(lines: string[]): void;
+    /** Shown in place of the empty log while the build has no output yet (e.g. still queued). */
+    setWaitingMessage(message: string | undefined): void;
     finish(phase: Exclude<BuildLogsPhase, "streaming" | "expired">, footer?: string, buildStatus?: string): void;
 }
 
@@ -89,6 +91,7 @@ type Session = {
     phase: BuildLogsPhase;
     footer?: string;
     buildStatus?: string;
+    waitingMessage?: string;
     expiresAtMs?: number;
     cancel?: () => void;
     ttlTimer?: NodeJS.Timeout;
@@ -163,7 +166,8 @@ function isWebviewMessage(value: unknown): value is { type: "ready" } | { type: 
  * snapshot), its line buffer, and the retention TTL that drops a finished session's lines.
  *
  * Re-opening a build whose session is still streaming, or finished within the TTL, just reveals
- * the existing panel instead of re-fetching. Anything else (stopped, failed, expired) starts over.
+ * the existing panel instead of re-fetching. Anything else (stopped, failed, expired) starts over,
+ * as does a full-log snapshot taken while the build was still running, since it is already stale.
  */
 export class BuildLogsPanelManager implements vscode.Disposable {
     private readonly sessions = new Map<string, Session>();
@@ -178,7 +182,8 @@ export class BuildLogsPanelManager implements vscode.Disposable {
         const key = buildLogsSessionKey(header.profile, header.region, header.buildId, header.mode);
         const existing = this.sessions.get(key);
 
-        if (existing && (existing.phase === "streaming" || existing.phase === "complete")) {
+        const isStaleSnapshot = existing?.header.mode === "full" && existing.buildStatus === "IN_PROGRESS";
+        if (existing && (existing.phase === "streaming" || (existing.phase === "complete" && !isStaleSnapshot))) {
             await this.showPanel(existing);
             return { handle: this.createHandle(existing), reused: true };
         }
@@ -284,6 +289,12 @@ export class BuildLogsPanelManager implements vscode.Disposable {
                     this.appendLines(session, lines);
                 }
             },
+            setWaitingMessage: (message) => {
+                if (isCurrent() && session.phase === "streaming" && session.waitingMessage !== message) {
+                    session.waitingMessage = message;
+                    this.postState(session);
+                }
+            },
             finish: (phase, footer, buildStatus) => {
                 if (isCurrent() && session.phase === "streaming") {
                     this.finish(session, phase, footer, buildStatus);
@@ -305,6 +316,7 @@ export class BuildLogsPanelManager implements vscode.Disposable {
         session.phase = "streaming";
         session.footer = undefined;
         session.buildStatus = undefined;
+        session.waitingMessage = undefined;
         session.expiresAtMs = undefined;
         session.pendingLines = [];
     }
@@ -374,6 +386,7 @@ export class BuildLogsPanelManager implements vscode.Disposable {
         session.phase = phase;
         session.footer = footer;
         session.buildStatus = buildStatus;
+        session.waitingMessage = undefined;
         session.cancel = undefined;
         this.startTtl(session);
         this.postState(session);
@@ -587,6 +600,7 @@ export class BuildLogsPanelManager implements vscode.Disposable {
             phase: session.phase,
             footer: session.footer ?? null,
             buildStatus: session.buildStatus ?? null,
+            waitingMessage: session.waitingMessage ?? null,
             ttlMinutes: Math.round(this.getTtlMs() / 60_000),
             poppedOut: session.poppedOut,
             // Relative, so a remote extension host's clock skew can't distort the countdown.

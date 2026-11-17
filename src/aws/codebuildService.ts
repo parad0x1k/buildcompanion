@@ -41,6 +41,10 @@ export type BuildLogsLocation = {
     status: BuildStatus;
     logGroupName?: string;
     logStreamName?: string;
+    /** CodeBuild's raw `currentPhase` (SUBMITTED, QUEUED, PROVISIONING, BUILD, ...). */
+    currentPhase?: string;
+    /** True when the build has CloudWatch logging turned off, so no log stream will ever appear. */
+    cloudWatchLogsDisabled?: boolean;
 };
 
 const DEFAULT_BUILD_HISTORY_LIMIT = 20;
@@ -120,7 +124,9 @@ function toBuildLogsLocation(build: Build): BuildLogsLocation | null {
         projectName: build.projectName,
         status: normalizeBuildStatus(build.buildStatus),
         logGroupName: build.logs?.groupName,
-        logStreamName: build.logs?.streamName
+        logStreamName: build.logs?.streamName,
+        currentPhase: build.currentPhase,
+        cloudWatchLogsDisabled: build.logs?.cloudWatchLogs?.status === "DISABLED"
     };
 }
 

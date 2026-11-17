@@ -8,6 +8,18 @@ type ErrorContext = {
     requiredPermissions?: string[];
 };
 
+/**
+ * An error whose message is already written for the user (e.g. "CloudWatch logging is disabled
+ * for this build"). `getUserFriendlyErrorMessage` passes it through verbatim instead of replacing
+ * it with a generic "check AWS configuration" message.
+ */
+export class UserFacingError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "UserFacingError";
+    }
+}
+
 function getErrorName(error: unknown): string {
     if (!error || typeof error !== "object") {
         return "";
@@ -103,6 +115,10 @@ export function getNoProfilesMessage(): string {
 }
 
 export function getUserFriendlyErrorMessage(error: unknown, context?: ErrorContext): string {
+    if (error instanceof UserFacingError) {
+        return error.message;
+    }
+
     const errorNameLower = getErrorName(error).toLowerCase();
     const errorMessageLower = getErrorMessage(error).toLowerCase();
     const profile = context?.profile?.trim() || "selected profile";

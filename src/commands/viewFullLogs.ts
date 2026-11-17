@@ -135,6 +135,10 @@ export async function viewFullLogs(
                 const result = await fetchFullBuildLog(resolvedProfile, resolvedRegion, resolvedBuildId, {
                     secretStorage: context.secrets,
                     signal: abortController.signal,
+                    onWaiting: (message) => {
+                        handle.setWaitingMessage(message);
+                        progress.report({ message });
+                    },
                     onLines: (lines) => handle.appendLines(lines),
                     onProgress: (totalLines) => progress.report({ message: `${totalLines} line(s) fetched…` })
                 });
