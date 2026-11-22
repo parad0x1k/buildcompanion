@@ -4,7 +4,7 @@ This document is the exhaustive reference for supported behavior in the current 
 
 ## Version Scope
 
-- Extension package version: tracked in `package.json` (`version` field) — currently `0.1.1`. This section previously hardcoded a stale value; prefer `package.json` as the source of truth if this drifts again.
+- Extension package version: tracked in `package.json` (`version` field) — currently `0.2.1`. This section previously hardcoded a stale value; prefer `package.json` as the source of truth if this drifts again.
 - VS Code engine target: tracked in `package.json` (`engines.vscode`) — currently `^1.95.0`.
 - Node engine target: `>=20.0.0`
 
@@ -18,8 +18,8 @@ This document is the exhaustive reference for supported behavior in the current 
 - Wait-queue flow for project-level build concurrency conflicts
 - Batch deployment for selected projects with delay and optional fallback branch
 - Build history (lazy loaded per project)
-- Dedicated per-build log viewer (read-only virtual editor document) with throttled updates and a configurable line-retention cap, in addition to the shared output channel
-- One-shot "View Full Log" snapshot (`codebuild.viewFullLogs`) that paginates CloudWatch from the beginning of the stream into a second, unbounded read-only document, independent of the tailing viewer's line cap
+- Dedicated per-build log panel (webview; editor tab or its own window) with throttled updates, a configurable line-retention cap, and a retention TTL; see "Build Log Panel" below
+- One-shot "View Full Log" snapshot (`codebuild.viewFullLogs`) that paginates CloudWatch from the beginning of the stream into a second "Full log" panel, independent of the live panel's line cap
 - Log message sanitization: ANSI color/cursor escape codes are stripped and carriage-return progress-bar overwrites are collapsed before display, so colorized/progress-reporting build tool output renders as plain legible text instead of stray control characters
 - CloudWatch log streaming with recoverable retry/backoff and failure summary extraction
 - Human-readable build status labels in the tree view (e.g. `IN_PROGRESS` → "In Progress") with a generic title-case fallback for any unrecognized status
@@ -512,8 +512,7 @@ Defaults and limits:
 - Max empty polls default: 4
 - Recent line buffer default: 500 lines
 - Recent line buffer clamp: 50 to 500
-- Log location wait timeout default: 120000 ms
-- Log location timeout minimum: 5000 ms
+- Log location wait: no timeout by default. A queued/provisioning build is waited on (with a status message in the panel) until its log stream appears or the panel is closed; a project with CloudWatch logging disabled fails immediately. An optional `logLocationTimeoutMs` (minimum 5000 ms) is available to internal callers.
 - Max recoverable polling errors: 5
 - Max recoverable backoff: 10000 ms
 - Additional retry jitter: up to 250 ms
@@ -633,6 +632,8 @@ No-profile message:
 | `codebuild.logsViewer.mirrorToOutputChannel` | boolean | `false` | n/a | Also copy every streamed log line into the output channel |
 | `codebuild.batchDeploy.maxSelectedProjects` | integer | `25` | `1..100` | Maximum projects selectable at once for a batch deployment |
 | `codebuild.localTimeZone` | string | `""` | valid IANA zone or empty | Overrides auto-detected system timezone used for the "Local" build time display; falls back to auto-detect on empty/invalid value |
+| `codebuild.buildHistory.maxEntriesPerProject` | integer | `20` | `1..100` | Builds loaded per project in Build History |
+| `codebuild.useFipsEndpoint` | boolean | `false` | n/a | Route CodeBuild and CloudWatch Logs requests to AWS FIPS endpoints; `AWS_USE_FIPS_ENDPOINT` is honored when off. Endpoint only; the extension itself is not FIPS-validated |
 
 ## Environment Variable Reference
 

@@ -30,7 +30,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # @vscode/test-cli and @vscode/test-electron require Node >= 22; Node 20 is end-of-life.
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -44,3 +45,8 @@ jobs:
 
       - name: Audit production dependencies
         run: npm run audit
+
+      # Runs vscode:prepublish (type-check + production bundle) and vsce's manifest checks, e.g. the
+      # @types/vscode <= engines.vscode rule, so packaging problems surface on the PR, not at publish.
+      - name: Package VSIX
+        run: npx vsce package --out buildcompanion.vsix

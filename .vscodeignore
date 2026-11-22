@@ -21,8 +21,9 @@ audit-report.json
 outdated-report.json
 deps-top.txt
 
-# VS Code workspace configuration
+# VS Code workspace configuration and the test runner's downloaded VS Code
 .vscode/
+.vscode-test/
 .github/
 .gitignore
 
