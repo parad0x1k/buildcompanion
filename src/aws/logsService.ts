@@ -4,10 +4,11 @@ import {
     getBuildLogsLocation,
     getBuildStatus,
     isTerminalState,
+    type BuildLogsLocation,
     type CodeBuildServiceOptions
 } from "./codebuildService";
 import { createCloudWatchLogsClient } from "./clientFactory";
-import { getUserFriendlyErrorMessage } from "./errorHandling";
+import { getUserFriendlyErrorMessage, UserFacingError } from "./errorHandling";
 import { extractErrorSummary } from "./errorExtractor";
 import type { BuildStatus } from "../state/store";
 import { logError, logInfo, logSection, sanitizeLogValue } from "../logging/outputChannelManager";
@@ -15,7 +16,11 @@ import { logError, logInfo, logSection, sanitizeLogValue } from "../logging/outp
 const DEFAULT_POLL_INTERVAL_MS = 2500;
 const DEFAULT_MAX_EMPTY_POLLS = 4;
 const DEFAULT_RECENT_LINE_BUFFER_SIZE = 500;
-const DEFAULT_LOG_LOCATION_TIMEOUT_MS = 120000;
+// While a build's status is still unconfirmed (not yet known to be terminal), re-check it only
+// every Nth consecutive idle poll (no new log events) instead of on every single one. CloudWatch
+// returning nothing new just means "quiet right now", not "finished" - checking this aggressively
+// mostly duplicates what BuildMonitor already tracks in the background for builds it's watching.
+const STATUS_CHECK_EVERY_N_IDLE_POLLS = 2;
 const MAX_RECOVERABLE_POLL_ERRORS = 5;
 const MAX_RECOVERABLE_BACKOFF_MS = 10000;
 const MAX_LOGS_NOT_READY_RETRIES = 5;
@@ -89,14 +94,31 @@ export type LogsServiceOptions = CodeBuildServiceOptions & {
     pollIntervalMs?: number;
     maxEmptyPolls?: number;
     recentLineBufferSize?: number;
+    /**
+     * Optional cap on how long to wait for the build's log stream to appear. By default there is
+     * none: a queued/provisioning build has no stream yet, and waiting for it is the point.
+     * Callers cancel through `signal` instead.
+     */
     logLocationTimeoutMs?: number;
+    /** Called while the build has no log output yet, with a human-readable reason (e.g. queued). */
+    onWaiting?: (message: string) => void;
     onFailureSummary?: (summary: string) => void;
     /** Called with newly formatted log lines as they arrive, in addition to the shared output channel. */
     onLogLines?: (lines: string[]) => void;
     /** Called once streaming ends normally (build reached a terminal state), with its final status. */
     onComplete?: (status: BuildStatus) => void;
+    /**
+     * Also copy every streamed line into the shared output channel. Defaults to the
+     * `codebuild.logsViewer.mirrorToOutputChannel` setting (off): the log panel is the reading
+     * surface, and mirroring doubles per-line work and memory while flooding the diagnostic channel.
+     */
+    mirrorToOutputChannel?: boolean;
     signal?: AbortSignal;
 };
+
+function isLogMirroringEnabled(): boolean {
+    return vscode.workspace.getConfiguration("codebuild").get<boolean>("logsViewer.mirrorToOutputChannel", false);
+}
 
 function sleep(delayMs: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
@@ -216,7 +238,7 @@ function formatLogLines(
     const prefix = timestamp ? `[${new Date(timestamp).toISOString()}] ` : "";
     const lines = sanitizedMessage.split("\n");
     const formattedLines: string[] = [];
-    const mirrorToOutputChannel = options?.mirrorToOutputChannel ?? true;
+    const mirrorToOutputChannel = options?.mirrorToOutputChannel ?? false;
 
     for (const line of lines) {
         const formattedLine = `${prefix}${line}`;
@@ -236,22 +258,66 @@ function pushRecentLogLine(buffer: string[], line: string, maxSize: number): voi
     }
 }
 
+/**
+ * What to tell the user while a build has no log output yet. CodeBuild only assigns the log
+ * group/stream once the build leaves the queue, and CloudWatch only creates the stream once the
+ * build container starts writing to it (around the end of PROVISIONING).
+ */
+export function describeWaitingForLogs(currentPhase?: string): string {
+    switch (currentPhase) {
+        case "SUBMITTED":
+        case "QUEUED":
+            return "Build is queued. Logs will appear here once CodeBuild starts it…";
+        case "PROVISIONING":
+            return "Provisioning the build environment. Logs will appear here once it is ready…";
+        default:
+            return "Waiting for the build to start writing logs…";
+    }
+}
+
+type LogWaitTracker = {
+    signal: AbortSignal;
+    buildId: string;
+    scope: string;
+    options?: { onWaiting?: (message: string) => void };
+    lastPhase?: string | null;
+};
+
+/** Reports a waiting state to the caller, logging to the output channel only on phase changes. */
+function reportWaiting(tracker: LogWaitTracker, currentPhase?: string): void {
+    const phase = currentPhase ?? null;
+    if (tracker.lastPhase !== phase) {
+        tracker.lastPhase = phase;
+        logInfo(
+            `[LOGS] Waiting for CloudWatch logs for build ${sanitizeBuildIdentifier(tracker.buildId)} (${tracker.scope})${currentPhase ? ` - build phase ${sanitizeLogValue(currentPhase)}` : ""}...`
+        );
+    }
+    tracker.options?.onWaiting?.(describeWaitingForLogs(currentPhase));
+}
+
+function assertCloudWatchLogsEnabled(location: BuildLogsLocation): void {
+    if (location.cloudWatchLogsDisabled) {
+        throw new UserFacingError("CloudWatch logging is disabled for this build, so there is no log stream to show");
+    }
+}
+
 async function resolveLogLocation(
     profile: string,
     region: string,
     buildId: string,
-    signal: AbortSignal,
+    tracker: LogWaitTracker,
     options?: LogsServiceOptions
 ): Promise<{ logGroupName: string; logStreamName: string; status: BuildStatus }> {
+    const { signal } = tracker;
     const pollIntervalMs = options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-    const timeoutMs = Math.max(5000, options?.logLocationTimeoutMs ?? DEFAULT_LOG_LOCATION_TIMEOUT_MS);
+    const timeoutMs = options?.logLocationTimeoutMs;
     const startedAtMs = Date.now();
 
     while (true) {
         throwIfAborted(signal);
 
-        if (Date.now() - startedAtMs > timeoutMs) {
-            throw new Error(`Timed out while waiting for CloudWatch logs for build ${buildId}`);
+        if (timeoutMs !== undefined && Date.now() - startedAtMs > Math.max(5000, timeoutMs)) {
+            throw new UserFacingError(`Timed out while waiting for CloudWatch logs for build ${buildId}`);
         }
 
         const location = await getBuildLogsLocation(profile, region, buildId, {
@@ -260,8 +326,10 @@ async function resolveLogLocation(
         });
 
         if (!location) {
-            throw new Error(`Build ${buildId} was not found`);
+            throw new UserFacingError(`Build ${buildId} was not found`);
         }
+
+        assertCloudWatchLogsEnabled(location);
 
         if (location.logGroupName && location.logStreamName) {
             return {
@@ -272,14 +340,36 @@ async function resolveLogLocation(
         }
 
         if (isTerminalState(location.status)) {
-            throw new Error("CloudWatch log stream is unavailable for this build");
+            throw new UserFacingError("CloudWatch log stream is unavailable for this build");
         }
 
-        logInfo(
-            `[LOGS] Waiting for CloudWatch logs to become available for build ${sanitizeBuildIdentifier(buildId)} (${formatSanitizedScope(profile, region)})...`
-        );
+        // Still queued/submitted: no log location has been assigned yet. Keep waiting (the caller
+        // cancels via `signal`) rather than giving up while the build is genuinely on its way.
+        reportWaiting(tracker, location.currentPhase);
         await sleep(pollIntervalMs, signal);
     }
+}
+
+/**
+ * Re-reads the build while its log stream exists in name only (not yet created in CloudWatch,
+ * or created but still empty). Returns the latest location, reporting a waiting state to the
+ * caller when the build is still running.
+ */
+async function checkBuildWhileWaitingForLogs(
+    profile: string,
+    region: string,
+    buildId: string,
+    tracker: LogWaitTracker,
+    secretStorage: vscode.SecretStorage | undefined
+): Promise<BuildLogsLocation | null> {
+    const latest = await getBuildLogsLocation(profile, region, buildId, { secretStorage, signal: tracker.signal });
+    if (latest) {
+        assertCloudWatchLogsEnabled(latest);
+        if (!isTerminalState(latest.status)) {
+            reportWaiting(tracker, latest.currentPhase);
+        }
+    }
+    return latest;
 }
 
 export async function streamBuildLogs(
@@ -321,6 +411,8 @@ export async function streamBuildLogs(
     const pollIntervalMs = Math.max(2000, Math.min(3000, options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS));
     const maxEmptyPolls = options?.maxEmptyPolls ?? DEFAULT_MAX_EMPTY_POLLS;
     const recentLineBufferSize = Math.min(500, Math.max(50, options?.recentLineBufferSize ?? DEFAULT_RECENT_LINE_BUFFER_SIZE));
+    // Read once per stream rather than per line.
+    const mirrorToOutputChannel = options?.mirrorToOutputChannel ?? isLogMirroringEnabled();
 
     try {
         throwIfAborted(signal);
@@ -328,11 +420,12 @@ export async function streamBuildLogs(
         logSection(`[LOGS] Build ${sanitizedBuildId}`);
         logInfo(`[LOGS] Streaming logs for build ${sanitizedBuildId} (${sanitizedScope})`);
 
+        const waitTracker: LogWaitTracker = { signal, buildId: normalizedBuildId, scope: sanitizedScope, options };
         const location = await resolveLogLocation(
             normalizedProfile,
             normalizedRegion,
             normalizedBuildId,
-            signal,
+            waitTracker,
             options
         );
 
@@ -346,6 +439,7 @@ export async function streamBuildLogs(
         let buildStatus: BuildStatus = location.status;
         let nextForwardToken: string | undefined;
         let emptyPolls = 0;
+        let idlePollsSinceStatusCheck = 0;
         const recentLogLines: string[] = [];
         let consecutiveRecoverableErrors = 0;
 
@@ -373,7 +467,7 @@ export async function streamBuildLogs(
                     for (const event of events) {
                         const rawMessage = event.message ?? "";
                         const sanitizedMessage = sanitizeLogMessageForDisplay(rawMessage);
-                        viewerLines.push(...formatLogLines(event.timestamp, sanitizedMessage));
+                        viewerLines.push(...formatLogLines(event.timestamp, sanitizedMessage, { mirrorToOutputChannel }));
 
                         for (const line of sanitizedMessage.split("\n")) {
                             const trimmed = line.trim();
@@ -387,21 +481,30 @@ export async function streamBuildLogs(
                     // CloudWatch events collapses into a single viewer update.
                     options?.onLogLines?.(viewerLines);
                     emptyPolls = 0;
+                    idlePollsSinceStatusCheck = 0;
                 } else {
                     emptyPolls += 1;
                 }
 
                 const tokenDidNotAdvance = previousToken !== undefined && nextForwardToken === previousToken;
                 if (tokenDidNotAdvance || events.length === 0) {
-                    const latestBuild = await getBuildStatus(
-                        normalizedProfile,
-                        normalizedRegion,
-                        normalizedBuildId,
-                        { secretStorage: options?.secretStorage, signal }
-                    );
+                    // A terminal status can't revert to running, so once it's confirmed there's
+                    // nothing left to learn from another GetBuild call - the checks below just
+                    // wait out maxEmptyPolls for any trailing log lines to finish flushing.
+                    idlePollsSinceStatusCheck += 1;
+                    if (!isTerminalState(buildStatus) && idlePollsSinceStatusCheck >= STATUS_CHECK_EVERY_N_IDLE_POLLS) {
+                        idlePollsSinceStatusCheck = 0;
 
-                    if (latestBuild) {
-                        buildStatus = latestBuild.status;
+                        const latestBuild = await getBuildStatus(
+                            normalizedProfile,
+                            normalizedRegion,
+                            normalizedBuildId,
+                            { secretStorage: options?.secretStorage, signal }
+                        );
+
+                        if (latestBuild) {
+                            buildStatus = latestBuild.status;
+                        }
                     }
 
                     if (isTerminalState(buildStatus) && tokenDidNotAdvance) {
@@ -420,11 +523,14 @@ export async function streamBuildLogs(
                 }
 
                 if (isLogsNotReadyError(error)) {
-                    const latestBuild = await getBuildStatus(
+                    // The stream is named but CloudWatch hasn't created it yet (the build
+                    // container is still starting). Keep waiting while the build is running.
+                    const latestBuild = await checkBuildWhileWaitingForLogs(
                         normalizedProfile,
                         normalizedRegion,
                         normalizedBuildId,
-                        { secretStorage: options?.secretStorage, signal }
+                        waitTracker,
+                        options?.secretStorage
                     );
 
                     if (latestBuild) {
@@ -491,7 +597,7 @@ export async function streamBuildLogs(
 
         logError(`[LOGS] Streaming build logs failed for ${sanitizedBuildId} (${sanitizedScope}): ${sanitizeLogValue(message)}`);
 
-        throw new Error(message);
+        throw new UserFacingError(message);
     } finally {
         const currentController = activeStreams.get(streamKey);
         if (currentController === controller) {
@@ -502,6 +608,10 @@ export async function streamBuildLogs(
 
 export type FetchFullBuildLogOptions = CodeBuildServiceOptions & {
     logLocationTimeoutMs?: number;
+    /** Delay between checks while waiting for a not-yet-started build to write its first log line. */
+    pollIntervalMs?: number;
+    /** Called while the build has no log output yet, with a human-readable reason (e.g. queued). */
+    onWaiting?: (message: string) => void;
     /** Safety cap on total lines fetched; defaults to the `codebuild.logsViewer.maxFullLogLines` setting. */
     maxLines?: number;
     /** Called with each newly fetched page's formatted lines, in fetch order. */
@@ -522,6 +632,9 @@ export type FetchFullBuildLogResult = {
  * `GetLogEvents` until it catches up to the latest data or a safety limit is reached. Unlike
  * `streamBuildLogs`, this does not keep polling for new data afterward - for a still-running
  * build it simply returns everything emitted so far.
+ *
+ * A build that is still queued/provisioning has nothing to snapshot yet, so this waits (until
+ * cancelled through `signal`) for its first log output instead of failing or returning nothing.
  */
 export async function fetchFullBuildLog(
     profile: string,
@@ -553,7 +666,9 @@ export async function fetchFullBuildLog(
         throwIfAborted(signal);
         logInfo(`[LOGS] Fetching full log history for build ${sanitizedBuildId} (${sanitizedScope})`);
 
-        const location = await resolveLogLocation(normalizedProfile, normalizedRegion, normalizedBuildId, signal, options);
+        const waitTracker: LogWaitTracker = { signal, buildId: normalizedBuildId, scope: sanitizedScope, options };
+        const pollIntervalMs = options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+        const location = await resolveLogLocation(normalizedProfile, normalizedRegion, normalizedBuildId, waitTracker, options);
         const logsClient = await createCloudWatchLogsClient(normalizedProfile, normalizedRegion, {
             secretStorage: options?.secretStorage
         });
@@ -568,6 +683,29 @@ export async function fetchFullBuildLog(
         let pageCount = 0;
         let consecutiveRecoverableErrors = 0;
         let logsNotReadyRetries = 0;
+
+        // Before the first line arrives, a running build may simply not have started writing
+        // yet: wait for it (returns true) instead of treating "no stream"/"empty" as the end.
+        const waitForFirstOutput = async (): Promise<boolean> => {
+            if (totalLines > 0) {
+                return false;
+            }
+
+            const latest = await checkBuildWhileWaitingForLogs(
+                normalizedProfile,
+                normalizedRegion,
+                normalizedBuildId,
+                waitTracker,
+                options?.secretStorage
+            );
+            if (!latest || isTerminalState(latest.status)) {
+                return false;
+            }
+
+            await sleep(pollIntervalMs, signal);
+            nextToken = undefined;
+            return true;
+        };
 
         while (true) {
             throwIfAborted(signal);
@@ -584,6 +722,10 @@ export async function fetchFullBuildLog(
             } catch (error) {
                 if (isLogStreamingCancellationError(error)) {
                     throw new LogStreamingCancelledError();
+                }
+
+                if (isLogsNotReadyError(error) && await waitForFirstOutput()) {
+                    continue;
                 }
 
                 if (isLogsNotReadyError(error) && logsNotReadyRetries < MAX_LOGS_NOT_READY_RETRIES) {
@@ -606,8 +748,12 @@ export async function fetchFullBuildLog(
                 throw error;
             }
 
-            pageCount += 1;
             const events = response.events ?? [];
+            if (events.length === 0 && await waitForFirstOutput()) {
+                continue;
+            }
+
+            pageCount += 1;
             const previousToken = nextToken;
             nextToken = response.nextForwardToken;
 
@@ -672,6 +818,6 @@ export async function fetchFullBuildLog(
 
         logError(`[LOGS] Full log fetch failed for ${sanitizedBuildId} (${sanitizedScope}): ${sanitizeLogValue(message)}`);
 
-        throw new Error(message);
+        throw new UserFacingError(message);
     }
 }

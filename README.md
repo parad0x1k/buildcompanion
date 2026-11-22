@@ -20,7 +20,7 @@ BuildCompanion is a native VS Code extension to trigger, monitor, and debug AWS 
 
 ## Privacy & Telemetry
 
-This extension makes **no network calls outside the AWS endpoints implied by the active profile and region**. It collects **no telemetry** and ships **no analytics SDK**. The `telemetry.telemetryLevel` VS Code setting is respected by default (no-op since no telemetry is sent). All AWS credentials live in your local AWS configuration files or in VS Code's encrypted Secret Storage; they are never written to logs, never transmitted to third parties, and never persisted in plaintext.
+This extension makes **no network calls outside the AWS endpoints implied by the active profile and region**, with one opt-in exception: if you enable `codebuild.agentTools.enabled` (default **off**) to let a compatible AI agent (e.g. GitHub Copilot Chat agent mode) discover and call BuildCompanion's agent tools, the inputs and outputs of those tool calls (project names, build status, branch names, and the region in use) are sent to whichever chat model backend you have configured, like any other tool call in that chat session. Agents use the profile and region you already selected in BuildCompanion, and when they do, your profile name is not included in what the model sees. This extension collects **no telemetry** and ships **no analytics SDK**. The `telemetry.telemetryLevel` VS Code setting is respected by default (no-op since no telemetry is sent). All AWS credentials live in your local AWS configuration files or in VS Code's encrypted Secret Storage; they are never written to logs, never transmitted to third parties, and never persisted in plaintext. Credentials never flow through agent tool input/output, regardless of whether agent tools are enabled.
 
 ## Compliance & FIPS Notice
 
@@ -45,12 +45,12 @@ This extension is a community tool and has **not** been developed, tested, or va
 1. Open VS Code.
 2. Open Extensions.
 3. Select "Install from VSIX...".
-4. Choose a package file such as `buildcompanion-1.1.0.vsix`.
+4. Choose the package file matching the version you downloaded (e.g. `buildcompanion-0.2.1.vsix`).
 5. Reload VS Code.
 
 ## Requirements
 
-- VS Code: `^1.85.0`
+- VS Code: `^1.95.0`
 - Node.js: `>=20.0.0` (development only)
 - AWS account access to CodeBuild and CloudWatch Logs
 - One of the supported auth sources:
@@ -70,10 +70,13 @@ Grant enough permissions for the APIs used by the extension:
 - `codebuild:BatchGetBuilds`
 - `codebuild:StartBuild`
 - `codebuild:StopBuild`
-- `codebuild:RetryBuild` (required to retry a build from Build History)
-- `codebuild:BatchGetProjects` (required to view project environment variables)
-- `codebuild:UpdateProject` (required to save project environment variable changes)
+- `codebuild:RetryBuild` (required to retry a build from Build History, Failed Builds, or a failure notification)
+- `codebuild:BatchGetProjects` (required to view project environment variables, `Start Build with Overrides...`, and `Edit Project Configuration...`)
+- `codebuild:UpdateProject` (required to save environment variable changes and `Edit Project Configuration...`)
+- `codebuild:ListCuratedEnvironmentImages` (only needed to browse AWS-managed images in the override and project configuration flows)
 - `logs:GetLogEvents`
+
+The optional AI agent tools use only the permissions above; `iam:PassRole` is not needed.
 
 If a permission is missing, the failed action shows a short notification and logs a detailed message naming the exact IAM action to add — see the `BuildCompanion` output channel.
 
@@ -94,9 +97,11 @@ If a permission is missing, the failed action shows a short notification and log
 - Retry a past build from Build History, or directly from a build-failure notification, using its original source version and project configuration.
 - Build concurrency prompts (Wait, Trigger anyway, Cancel) with queue handling.
 - Batch deployment for selected projects with per-project branch memory and fallback branch.
-- Dedicated, scrollable per-build log viewer (its own editor tab) with throttled updates and a line-retention cap, so very large log streams stay responsive.
-- `View Full Log` loads a build's entire CloudWatch log history (from the very beginning) into a second, unbounded read-only tab — useful once the tailing viewer has truncated older lines.
-- Log output (in both the viewer and the output channel) has ANSI color codes and carriage-return progress-bar overwrites cleaned up, so colorized/progress-reporting build tool output stays readable.
+- Dedicated per-build log panel (an editor tab, or its own floating window) with a live status header, line filter, Follow / Wrap / Errors-only toggles, and colored error/warning/phase lines. Updates are throttled and line-capped so very large log streams stay responsive.
+- `View Full Log` loads a build's entire CloudWatch log history (from the very beginning) into a "Full log" panel — useful once the live panel has truncated older lines.
+- Log output has ANSI color codes and carriage-return progress-bar overwrites cleaned up, so colorized/progress-reporting build tool output stays readable.
+- `Start Build with Overrides...` for one-off, build-scoped changes (branch, environment variables, compute, image, buildspec, timeouts), and `Edit Project Configuration...` to save the same settings to the project.
+- Build History and Failed Builds rows show how long each build took.
 - Build statuses in the TreeView are shown as short, human-readable labels (e.g. "In Progress", "Timed Out") instead of raw AWS status codes.
 - Build History timestamps can be toggled between your detected local timezone and UTC, with the preference remembered across sessions.
 - View and edit a project's CodeBuild environment variables from a settings (gear) icon.
@@ -104,6 +109,7 @@ If a permission is missing, the failed action shows a short notification and log
 - Failure summary extraction from recent log lines.
 - Search and filtering of projects in TreeView (comma-separated terms match any, e.g. `api,fe,middleware`).
 - Failed Builds section tracking builds you triggered via BuildCompanion that ended in failure, with one-click retry.
+- Optional AI agent tools (`codebuild.agentTools.enabled`, off by default): lets a compatible AI agent trigger a build or query project/build status/history through the same validated logic as the tree view. See [FEATURE_REFERENCE.md](FEATURE_REFERENCE.md) for the full tool list, scope, and permissions.
 - Scope-aware state for profile, region, branches, selections, queued items, and destructive-action blocks.
 - Output channel logging with identifier redaction by default and configurable retention.
 - Permission-denied failures name the specific missing IAM action where applicable.
@@ -123,16 +129,21 @@ All contributed commands are available through the Command Palette. Several are 
 | `codebuild.toggleBuildTimeDisplay` | Toggle Build Time Display (Local/UTC) | Settings row, Command Palette | Switch Build History timestamps between local time and UTC |
 | `codebuild.setTemporaryCredentials` | Set AWS Credentials | Settings row, Command Palette | Store temporary credentials in SecretStorage |
 | `codebuild.triggerBuild` | Trigger Build | Project inline action, context menu, Command Palette | Start build for a project |
+| `codebuild.startBuildWithOverrides` | Start Build with Overrides... | Project context menu, Command Palette | Start one build with temporary overrides; nothing is saved to the project |
 | `codebuild.cancelBuild` | Cancel Build | Active build inline action, Command Palette | Stop a selected in-progress build |
 | `codebuild.cancelAllBuilds` | Cancel All Builds | Toolbar, Command Palette | Cancel in-progress and queued operations in current scope |
 | `codebuild.viewLogs` | View Logs | Build history inline action, Command Palette | Open the per-build log viewer and stream CloudWatch logs |
-| `codebuild.viewFullLogs` | View Full Log | Build history inline action, log viewer toolbar, Command Palette | Load a build's entire CloudWatch log history into a readable, unbounded tab |
+| `codebuild.viewFullLogs` | View Full Log | Build history inline action, log panel toolbar, Command Palette | Load a build's entire CloudWatch log history into an unbounded log panel |
 | `codebuild.retryBuild` | Retry Build | Build history inline action, Command Palette | Start a new build reusing a past build's source version |
 | `codebuild.editEnvironmentVariables` | Edit Environment Variables | Project inline action (gear icon), Command Palette | View/add/edit/remove a project's CodeBuild environment variables |
+| `codebuild.editProjectConfiguration` | Edit Project Configuration... | Project context menu, Command Palette | Permanently update a project's curated build settings via `UpdateProject` |
 | `codebuild.selectAllProjects` | Select All Visible Projects | Toolbar (conditional), Command Palette | Select visible projects for batch deploy |
+| `codebuild.clearProjectSelection` | Clear Project Selection | Toolbar and Projects header (when anything is selected), Command Palette | Uncheck every selected project in the current profile/region |
 | `codebuild.deployAll` | Deploy Selected Projects | Toolbar, projects root context menu, Command Palette | Start sequential batch deployment |
 | `codebuild.setBranch` | Set Branch | Project inline action, context menu, Command Palette | Save scoped branch mapping |
 | `codebuild.clearAllBranches` | Clear All Saved Branches | Toolbar (conditional), Command Palette | Clear all saved branch mappings |
+| `codebuild.dismissFailedBuild` | Dismiss Failed Build | Failed Builds inline action | Remove one entry from Failed Builds |
+| `codebuild.clearFailedBuilds` | Clear Failed Builds | Failed Builds toolbar, Command Palette | Remove every entry from Failed Builds in the current scope |
 | `codebuild.openTerminal` | Open AWS Setup Terminal | Command Palette, setup message action | Open terminal for AWS CLI setup |
 
 ## Authentication and Region Behavior
@@ -199,18 +210,22 @@ Selecting more than `codebuild.batchDeploy.maxSelectedProjects` (default `25`) p
 ### View Logs and Failure Summary
 
 1. Open logs from a history row, active build, or command.
-2. Logs stream into a dedicated, scrollable editor tab for that build (opened beside your current editor) so you can keep watching while you work elsewhere. The same lines are also written to the shared `BuildCompanion` output channel for continuity.
-3. The viewer keeps the most recent `codebuild.logsViewer.maxLines` lines (default `10000`) and shows a truncation notice once older lines are dropped, so extremely long-running builds stay responsive.
-4. Closing the log viewer tab stops streaming for that build (no more CloudWatch API calls are made on your behalf).
-5. For failed builds, a failure summary is extracted from recent log lines and appended to the viewer and the output channel.
-6. ANSI color codes and carriage-return progress-bar overwrites are cleaned up before display, so colorized or progress-reporting build tool output (e.g. `docker`, `npm`, `pip`) reads as plain text instead of stray control characters.
+2. Logs stream into a dedicated log panel for that build, opened as a tab beside your current editor. Use **Pop out** to move it into its own window, or set `codebuild.logsViewer.openIn` to `"window"` to always open it there.
+3. The panel header shows the build's live status. Filter lines, toggle Follow / Wrap / Errors-only, and use Copy, Full log, or Reload from the toolbar.
+4. If the build is still queued or provisioning, the panel waits for the first log output for as long as it is open, and says why it is waiting.
+5. The panel keeps the most recent `codebuild.logsViewer.maxLines` lines (default `10000`) and shows a truncation notice once older lines are dropped. Lines stay in memory for `codebuild.logsViewer.ttlMinutes` (default `15`) after the stream ends, so re-opening the same build's logs is instant.
+6. Closing the panel stops streaming for that build (no more CloudWatch API calls are made on your behalf).
+7. For failed builds, a failure summary is extracted from recent log lines and shown in the panel's final banner and in the `BuildCompanion` output channel.
+8. ANSI color codes and carriage-return progress-bar overwrites are cleaned up before display, so colorized or progress-reporting build tool output (e.g. `docker`, `npm`, `pip`) reads as plain text instead of stray control characters.
+
+Log lines are not copied into the `BuildCompanion` output channel by default. Enable `codebuild.logsViewer.mirrorToOutputChannel` if you want them there as well.
 
 ### View the Entire Log History
 
-1. Click the `View Full Log` button in the log viewer tab's toolbar, or use the `View Full Log` inline action on a Build History / Active Builds row.
-2. The build's entire available CloudWatch log history is fetched from the very beginning (not just the recent tail) and shown in a second, unbounded read-only tab, leaving your original tailing viewer untouched.
-3. A cancellable progress notification reports how many lines have been fetched so far, and the tab fills in incrementally as pages arrive.
-4. This fetch is capped at `codebuild.logsViewer.maxFullLogLines` (default `50000` lines) as a safety limit; if reached, the tab's footer says so and names the setting to raise.
+1. Click **Full log** in the log panel's toolbar, or use the `View Full Log` inline action on a Build History / Active Builds row.
+2. The build's entire available CloudWatch log history is fetched from the very beginning (not just the recent tail) and shown in a "Full log" panel, leaving the live panel untouched.
+3. A cancellable progress notification reports how many lines have been fetched so far, and the panel fills in incrementally as pages arrive. Re-opening the full log of a build that was still running fetches a fresh copy.
+4. This fetch is capped at `codebuild.logsViewer.maxFullLogLines` (default `50000` lines) as a safety limit; if reached, the panel says so and names the setting to raise.
 
 ### Retry a Build
 
@@ -226,7 +241,7 @@ Selecting more than `codebuild.batchDeploy.maxSelectedProjects` (default `25`) p
 
 1. Use the settings (gear) inline action on a project row (or `Edit Environment Variables` from the Command Palette).
 2. The current environment variables configured on the CodeBuild project are fetched and listed.
-3. Add, edit, or remove variables, choosing a type (`PLAINTEXT`, `PARAMETER_STORE`, or `SECRETS_MANAGER`) for each.
+3. Add, edit, or remove variables, choosing a type for each: Plain text, Parameter Store, or Secrets Manager (`PLAINTEXT`, `PARAMETER_STORE`, `SECRETS_MANAGER` in AWS).
 4. Choose `Save changes to AWS` to apply, or dismiss without saving to discard your edits. Nothing is written to AWS until you explicitly save.
 
 ### Cancel Active Operations in Scope
@@ -240,8 +255,10 @@ Selecting more than `codebuild.batchDeploy.maxSelectedProjects` (default `25`) p
 
 ## Monitoring and Notifications
 
-- Active build polling is enabled by default.
-- Adaptive polling can automatically increase poll interval when many builds are active.
+- Activation no longer waits on AWS: the tree view and all commands are available immediately, and populate in the background once profile/project discovery finishes (useful on slow networks, cold credential/SSO resolution, or Dev Containers).
+- Active build polling is enabled by default, starting at `codebuild.monitor.pollIntervalMs` (default `5000` ms; raise this if your account sees CodeBuild API throttling).
+- Adaptive polling can automatically increase poll interval when many builds are active (up to `15000` ms).
+- While no VS Code window is focused, polling slows to a third of its normal rate (at most every 30 seconds) and resumes immediately when focus returns. Open log panels keep streaming at full speed.
 - Completion notifications are shown for success, failure, timeout, fault, and stopped states, and name the branch/source version that was built.
 - Failure notifications include a `Retry Build` button to immediately restart the same build without leaving the notification.
 - Failed builds that BuildCompanion itself triggered are also tracked in the Failed Builds section until dismissed, cleared, or superseded by a successful build for that project.
@@ -253,14 +270,22 @@ Selecting more than `codebuild.batchDeploy.maxSelectedProjects` (default `25`) p
 | Setting | Default | Description |
 | --- | --- | --- |
 | `codebuild.monitor.adaptivePolling` | `true` | Increase polling interval with higher active-build count to reduce pressure |
+| `codebuild.monitor.pollIntervalMs` | `5000` | Base interval (ms) between active-build status checks (`3000` to `15000`); raise if AWS throttles requests |
 | `codebuild.monitor.maxConcurrentStatusChecks` | `6` | Maximum parallel status-check concurrency (`1` to `20`) |
 | `codebuild.performanceDiagnostics.enabled` | `false` | Emit periodic monitor performance diagnostics |
 | `codebuild.logging.maxOutputLines` | `8000` | Output retention threshold; set `0` to disable automatic clearing |
 | `codebuild.logging.verbose` | `false` | Disable identifier redaction in output logs |
 | `codebuild.logsViewer.maxLines` | `10000` | Maximum lines retained in the per-build log viewer before older lines are truncated (minimum `500`) |
 | `codebuild.logsViewer.maxFullLogLines` | `50000` | Safety cap on total lines fetched by `View Full Log` (minimum `1000`) |
+| `codebuild.logsViewer.ttlMinutes` | `15` | Minutes log lines stay in memory after a stream ends, so re-opening the same build's logs is instant |
+| `codebuild.logsViewer.openIn` | `"editor"` | Open log panels as editor tabs (`"editor"`) or in their own window (`"window"`) |
+| `codebuild.logsViewer.mirrorToOutputChannel` | `false` | Also copy streamed log lines into the `BuildCompanion` output channel |
+| `codebuild.buildHistory.maxEntriesPerProject` | `20` | Builds shown per project in Build History (`1` to `100`) |
 | `codebuild.batchDeploy.maxSelectedProjects` | `25` | Maximum projects selectable at once (checkboxes or Select All) for a batch deployment (`1` to `100`) |
 | `codebuild.localTimeZone` | `""` (auto-detect) | IANA time zone (e.g. `America/New_York`) used for the "Local" build time display; see [Troubleshooting](#local-build-times-dont-change-in-a-dev-containerwslssh-remote) |
+| `codebuild.useFipsEndpoint` | `false` | Route CodeBuild and CloudWatch Logs requests to AWS FIPS endpoints; see [Compliance & FIPS Notice](#compliance--fips-notice) |
+| `codebuild.agentTools.enabled` | `false` | Expose BuildCompanion's tools to compatible AI agents (e.g. Copilot Chat agent mode); see [FEATURE_REFERENCE.md](FEATURE_REFERENCE.md) |
+| `codebuild.agentTools.requireExplicitScopeForBuilds` | `false` | Require agents to name both profile and region before triggering a build, instead of using your current selection |
 
 ## Security Notes
 
@@ -291,7 +316,9 @@ Selecting more than `codebuild.batchDeploy.maxSelectedProjects` (default `25`) p
 
 ### Log stream unavailable
 
-- Ensure CloudWatch Logs permissions are granted.
+- Ensure CloudWatch Logs permissions are granted (`logs:GetLogEvents`).
+- Check that CloudWatch logging is enabled on the CodeBuild project. If it is disabled, the log panel says so immediately.
+- A build that is still queued or provisioning has no log stream yet; keep the panel open and it starts streaming once the build writes its first output.
 - Some builds may complete without available log stream metadata.
 
 ### Local build times don't change in a Dev Container/WSL/SSH remote

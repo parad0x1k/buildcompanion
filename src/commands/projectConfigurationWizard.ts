@@ -7,7 +7,7 @@ import type {
     ProjectEnvironmentVariable
 } from "../aws/codebuildService";
 import { notify } from "../notifications/notifier";
-import { promptForVariableDetails } from "./projectEnvironmentVariables";
+import { formatEnvVarPickDetails, promptForVariableDetails } from "./projectEnvironmentVariables";
 import { promptForBranchSelection } from "./shared";
 
 /**
@@ -600,8 +600,7 @@ async function editEnvironmentVariablesList(
             .sort((a, b) => a.name.localeCompare(b.name))
             .map((variable) => ({
                 label: `$(symbol-variable) ${variable.name}`,
-                description: variable.type,
-                detail: variable.type === "PLAINTEXT" ? variable.value : `\u2192 ${variable.value}`,
+                ...formatEnvVarPickDetails(variable),
                 action: "edit",
                 variable
             }));

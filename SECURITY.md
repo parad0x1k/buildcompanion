@@ -4,7 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | ✅ Yes    |
+| 0.2.x   | ✅ Yes    |
+| 0.1.x   | ❌ No (please upgrade to 0.2.x) |
 
 ## Reporting a Vulnerability
 
@@ -20,7 +21,7 @@ If you discover a security vulnerability in BuildCompanion for AWS CodeBuild, pl
 
 This extension:
 - Communicates exclusively with AWS services using credentials you provide.
-- Does **not** transmit any data to third-party servers.
+- Does **not** transmit any data to third-party servers, **except** when you explicitly enable `codebuild.agentTools.enabled` (default **off**) to expose BuildCompanion's agent tools to a compatible AI agent (e.g. GitHub Copilot Chat agent mode) — in that case, tool call inputs/outputs (project names, build status, branch names, and the region in use) are sent to whichever chat model backend is configured for that chat session, like any other tool call. When a tool uses your current BuildCompanion selection, the profile name is withheld from its output and error messages. AWS credentials themselves never flow through agent tool input/output, regardless of this setting.
 - Stores temporary AWS credentials only in VS Code Secret Storage (encrypted, never in plaintext files).
 - Redacts sensitive identifiers (profile names, region, build IDs) from output logs by default.
 

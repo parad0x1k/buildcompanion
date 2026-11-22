@@ -6,13 +6,13 @@ import {
 import { clearAwsClientCache } from "../aws/clientFactory";
 import { getUserFriendlyErrorMessage } from "../aws/errorHandling";
 import type { AppStore } from "../state/store";
-import { getOutputChannel, logError, sanitizeLogValue } from "../logging/outputChannelManager";
+import { getOutputChannel, logError, logInfo, sanitizeLogValue } from "../logging/outputChannelManager";
 import { formatScope, notify } from "../notifications/notifier";
 import { BUILD_HISTORY_LIMIT, showShortStatusMessage, type CommandDeps } from "./shared";
 import { refreshProfilesAndProjects, switchProfile, switchRegionAndReload, setTemporaryCredentials } from "./profileCommands";
 import { triggerBuild } from "./triggerBuild";
 import { setBranch, clearAllSavedBranches } from "./branchCommands";
-import { deployAll, selectAllProjects } from "./batchDeploy";
+import { clearProjectSelection, deployAll, selectAllProjects } from "./batchDeploy";
 import { cancelBuild, cancelAllBuilds } from "./cancelBuild";
 import { viewLogs } from "./viewLogs";
 import { viewFullLogs } from "./viewFullLogs";
@@ -143,6 +143,7 @@ export function registerCodeBuildCommands({ context, store }: CommandDeps): void
         register("codebuild.editEnvironmentVariables", async (arg?: unknown) => editProjectEnvironmentVariables(context, store, arg)),
         register("codebuild.editProjectConfiguration", async (arg?: unknown) => editProjectConfiguration(context, store, arg)),
         register("codebuild.selectAllProjects", async () => selectAllProjects(store)),
+        register("codebuild.clearProjectSelection", () => clearProjectSelection(store)),
         register("codebuild.deployAll", async () => deployAll(context, store)),
         register("codebuild.setBranch", async (arg?: unknown) => setBranch(store, arg)),
         register("codebuild.clearAllBranches", async () => clearAllSavedBranches(store)),
@@ -155,26 +156,52 @@ export function registerCodeBuildCommands({ context, store }: CommandDeps): void
 }
 
 export async function initializeCommandState(context: vscode.ExtensionContext, store: AppStore): Promise<void> {
-    await refreshProfilesAndProjects(context, store);
+    const startedAtMs = Date.now();
+    logInfo("[RECONCILE] Starting profile/project discovery...");
 
-    const state = store.getState();
-    if (!state.currentProfile) {
+    // Active-build reconciliation only needs the profile/region, not the project list, so it
+    // starts as soon as the scope is known and overlaps with project listing instead of waiting
+    // for it (the client factory shares one credential resolution between the two).
+    let activeBuildsReconciliation: Promise<void> | undefined;
+    await refreshProfilesAndProjects(context, store, {
+        onScopeResolved: (profile, region) => {
+            activeBuildsReconciliation = reconcileActiveBuilds(context, store, profile, region);
+        }
+    });
+    logInfo(`[RECONCILE] Profile/project discovery finished in ${Date.now() - startedAtMs}ms`);
+
+    if (!activeBuildsReconciliation) {
         store.setActiveBuilds([]);
         return;
     }
 
+    await activeBuildsReconciliation;
+}
+
+async function reconcileActiveBuilds(
+    context: vscode.ExtensionContext,
+    store: AppStore,
+    profile: string,
+    region: string
+): Promise<void> {
     try {
-        const activeBuilds = await listRecentActiveBuilds(
-            state.currentProfile,
-            state.currentRegion,
-            50,
-            { secretStorage: context.secrets }
-        );
+        const activeBuildsStartedAtMs = Date.now();
+        const activeBuilds = await listRecentActiveBuilds(profile, region, 50, { secretStorage: context.secrets });
+
+        // The user may have switched profile/region while this was in flight; don't overwrite
+        // the new scope's active builds with the old scope's results.
+        const state = store.getState();
+        if (state.currentProfile !== profile || state.currentRegion !== region) {
+            logInfo("[RECONCILE] Scope changed during startup reconciliation; discarding its results");
+            return;
+        }
+
         store.setActiveBuilds(activeBuilds);
+        logInfo(`[RECONCILE] Active build reconciliation finished in ${Date.now() - activeBuildsStartedAtMs}ms (${activeBuilds.length} active build(s))`);
     } catch (error) {
         const message = getUserFriendlyErrorMessage(error, {
-            profile: state.currentProfile,
-            region: state.currentRegion,
+            profile,
+            region,
             operation: "Startup build reconciliation"
         });
         logError(`[RECONCILE] ${sanitizeLogValue(message)}`);

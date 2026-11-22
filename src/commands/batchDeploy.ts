@@ -16,6 +16,7 @@ import {
     canSelectAllVisibleProjects,
     createBatchCancellationController,
     formatDeploymentPreview,
+    pluralize,
     formatSanitizedScope,
     getSelectedProjectNames,
     getVisibleProjects,
@@ -134,7 +135,9 @@ export async function deployAll(
     if (missingBranchProjects.length > 0) {
         const fallbackBranchInput = await promptForBranchSelection({
             title: "Fallback branch for selected projects (optional)",
-            prompt: `${missingBranchProjects.length} selected project(s) have no saved branch. Leave empty to use project defaults.`,
+            prompt: missingBranchProjects.length === 1
+                ? "1 selected project has no saved branch. Leave empty to use its default branch."
+                : `${missingBranchProjects.length} selected projects have no saved branch. Leave empty to use each project's default branch.`,
             initialValue: ""
         });
 
@@ -155,13 +158,14 @@ export async function deployAll(
 
     const previewConfirmation = await notify(
         "warning",
-        `Start deployment for ${projectCount} selected project(s) in ${formatScope(profile, region)}?`,
+        `Deploy ${pluralize(projectCount, "project")} in ${formatScope(profile, region)}?`,
         {
             modal: true,
             detail: [
-                `Delay between builds: ${delayMs / 1000}s`,
+                projectCount === 1
+                    ? "The build starts right away."
+                    : `Builds start one at a time, ${delayMs / 1000}s apart.`,
                 "",
-                "Project -> Branch",
                 formatDeploymentPreview(batchProjects)
             ].join("\n"),
             actions: ["Start Deployment"]
@@ -328,4 +332,26 @@ export async function selectAllProjects(store: AppStore): Promise<void> {
     });
 
     showShortStatusMessage(`Selected ${visibleProjects.length} project(s) in ${formatScope(profile, state.currentRegion)}`);
+}
+
+/**
+ * Unchecks every selected project in the current profile/region, including selections hidden by
+ * the current search filter. Other scopes' selections are left alone.
+ */
+export function clearProjectSelection(store: AppStore): void {
+    const state = store.getState();
+    const profile = state.currentProfile;
+
+    if (!profile) {
+        return;
+    }
+
+    const selectedCount = store.getSelectedProjects(profile, state.currentRegion).length;
+    if (selectedCount === 0) {
+        showShortStatusMessage(`No projects are selected in ${formatScope(profile, state.currentRegion)}`);
+        return;
+    }
+
+    store.clearProjectSelections(profile, state.currentRegion);
+    showShortStatusMessage(`Cleared selection of ${pluralize(selectedCount, "project")} in ${formatScope(profile, state.currentRegion)}`);
 }

@@ -5,6 +5,7 @@ import {
     filterProjectsBySearch,
     formatBranchForNotification,
     formatDeploymentPreview,
+    pluralize,
     formatSanitizedScope,
     hasProjectInScope,
     resolveBuildFromArg,
@@ -226,12 +227,13 @@ describe("commands/shared", () => {
     });
 
     describe("formatDeploymentPreview", () => {
-        it("renders project -> branch lines", () => {
+        it("renders one bulleted project — branch line per project", () => {
             const preview = formatDeploymentPreview([
                 { projectName: "a", branch: "main" },
-                { projectName: "b" }
+                { projectName: "b" },
+                { projectName: "c", branch: "   " }
             ]);
-            assert.equal(preview, "a -> main\nb -> default source version");
+            assert.equal(preview, "•  a — main\n•  b — project default\n•  c — project default");
         });
 
         it("truncates after 20 lines with a remaining-count summary", () => {
@@ -239,7 +241,21 @@ describe("commands/shared", () => {
             const preview = formatDeploymentPreview(batch);
             const lines = preview.split("\n");
             assert.equal(lines.length, 21);
-            assert.equal(lines[20], "...and 5 more project(s)");
+            assert.equal(lines[20], "…and 5 more projects");
+        });
+
+        it("uses the singular when exactly one project is left over", () => {
+            const batch = Array.from({ length: 21 }, (_, index) => ({ projectName: `p${index}` }));
+            assert.equal(formatDeploymentPreview(batch).split("\n")[20], "…and 1 more project");
+        });
+    });
+
+    describe("pluralize", () => {
+        it("picks the singular only for exactly one", () => {
+            assert.equal(pluralize(1, "project"), "1 project");
+            assert.equal(pluralize(0, "project"), "0 projects");
+            assert.equal(pluralize(3, "project"), "3 projects");
+            assert.equal(pluralize(2, "branch", "branches"), "2 branches");
         });
     });
 });

@@ -4,8 +4,8 @@ This document is the exhaustive reference for supported behavior in the current 
 
 ## Version Scope
 
-- Extension package version: `1.0.0`
-- VS Code engine target: `^1.110.0`
+- Extension package version: tracked in `package.json` (`version` field) — currently `0.2.1`. This section previously hardcoded a stale value; prefer `package.json` as the source of truth if this drifts again.
+- VS Code engine target: tracked in `package.json` (`engines.vscode`) — currently `^1.95.0`.
 - Node engine target: `>=20.0.0`
 
 ## High-Level Capability Inventory
@@ -18,8 +18,8 @@ This document is the exhaustive reference for supported behavior in the current 
 - Wait-queue flow for project-level build concurrency conflicts
 - Batch deployment for selected projects with delay and optional fallback branch
 - Build history (lazy loaded per project)
-- Dedicated per-build log viewer (read-only virtual editor document) with throttled updates and a configurable line-retention cap, in addition to the shared output channel
-- One-shot "View Full Log" snapshot (`codebuild.viewFullLogs`) that paginates CloudWatch from the beginning of the stream into a second, unbounded read-only document, independent of the tailing viewer's line cap
+- Dedicated per-build log panel (webview; editor tab or its own window) with throttled updates, a configurable line-retention cap, and a retention TTL; see "Build Log Panel" below
+- One-shot "View Full Log" snapshot (`codebuild.viewFullLogs`) that paginates CloudWatch from the beginning of the stream into a second "Full log" panel, independent of the live panel's line cap
 - Log message sanitization: ANSI color/cursor escape codes are stripped and carriage-return progress-bar overwrites are collapsed before display, so colorized/progress-reporting build tool output renders as plain legible text instead of stray control characters
 - CloudWatch log streaming with recoverable retry/backoff and failure summary extraction
 - Human-readable build status labels in the tree view (e.g. `IN_PROGRESS` → "In Progress") with a generic title-case fallback for any unrecognized status
@@ -32,6 +32,7 @@ This document is the exhaustive reference for supported behavior in the current 
 - Scope-aware state (profile + region) for branches, selections, queues, and safety blocks
 - Managed output channel logging with redaction and retention controls
 - Permission-denied error messages that name the specific missing IAM action when known
+- Optional AI agent tools (`codebuild.agentTools.enabled`, off by default): four VS Code Language Model Tools - see "AI Agent Tools" below
 
 ## Architecture and Data Flow
 
@@ -40,6 +41,39 @@ This document is the exhaustive reference for supported behavior in the current 
 - AWS services: CodeBuild, CloudWatch Logs, credentials, profile and region handling
 - Monitor: background polling and queued build progression
 - UI: native TreeView provider (no webview)
+- Agent tools: `src/agent/` - thin `vscode.LanguageModelTool` adapters over the same AWS services/store used by commands, registered only when `codebuild.agentTools.enabled` is on
+
+## AI Agent Tools
+
+BuildCompanion can expose a small set of operations to compatible AI agents (e.g. GitHub Copilot Chat agent mode) via VS Code's native Language Model Tool API (`contributes.languageModelTools` + `vscode.lm.registerTool`) - not a standalone MCP server or CLI, since the intended caller is an agent already running inside the same VS Code session.
+
+**Enablement:** off by default. Set `codebuild.agentTools.enabled` to `true` to register the tools; the setting can be toggled live without reloading VS Code. Requires VS Code `^1.95.0` or later (the version that finalized the Language Model Tool API).
+
+**Design principles applied:**
+- **Scope defaults to the user's selection.** `profile` and `region` are optional on every tool (implemented in `src/agent/scope.ts`). When omitted, the profile and region the user selected in the BuildCompanion view are used, and the tool descriptions tell the model to omit them rather than ask the user. The scope therefore always comes from an explicit user choice, never from a model guess. An explicitly passed profile always wins, and must be a profile BuildCompanion has discovered (rejected with `VALIDATION_ERROR` otherwise, without listing the real ones, so a model can't probe for profile names). No selection and no explicit profile returns `NO_SELECTION`.
+- **Profile names are withheld from the model.** When the user's selection is used, results report `usedCurrentSelection: true` and the `region` but omit `profile`, and error messages say "the current BuildCompanion profile" instead of the name. Profile names often encode account, client, or environment names. A profile the agent passed itself is echoed back, since the model already has it. Credentials, account IDs, ARNs, and the list of configured profiles never appear in tool output.
+- **Confirmed scope is pinned for builds.** `codebuild_trigger_build`'s confirmation (rendered locally by VS Code, not sent to the model) shows the real profile and region and notes when they are the user's current selection. That exact scope is pinned for up to 10 minutes; if the selection changes before `invoke` runs, nothing is started and the result is `SCOPE_CHANGED`. `codebuild.agentTools.requireExplicitScopeForBuilds` (default `false`) makes the trigger tool refuse to fall back to the selection, so the agent must ask the user for both.
+- Every tool returns a structured JSON result (serialized as the tool's text output) with an `ok` boolean and, on failure, a machine-readable `errorType` (`VALIDATION_ERROR`, `NO_SELECTION`, `SCOPE_CHANGED`, `NOT_FOUND`, `ALREADY_IN_PROGRESS`, `BLOCKED`, `PERMISSION_DENIED`, `UNEXPECTED_ERROR`) plus a human-readable `message` - never raw AWS SDK error text, which can contain ARNs/account IDs.
+- The mutating tool (`codebuild_trigger_build`) restates the region, project and branch in its result, since VS Code's own "Always Allow"/"Allow all"/organization auto-approve settings can suppress the confirmation dialog on repeat calls - the result is the one place that information reliably survives.
+- `codebuild_trigger_build` does not expose branch/image/buildspec/environment-variable/privileged-mode overrides. AWS documents several of those fields (`buildspecOverride`, `privilegedModeOverride`) as distinguished-risk, with their own IAM condition keys, specifically because they let the caller change what code runs under the project's service role. Use "Start Build with Overrides..." in the editor for that; it is not agent-callable.
+- `codebuild_trigger_build` is guarded by a per-(profile, region, project) in-flight lock and a deterministic `idempotencyToken`, and declines (with a structured `ALREADY_IN_PROGRESS` result) rather than queuing or force-starting when a build is already running for the project - there is no agent-reachable equivalent of the tree view's "Wait / Trigger anyway / Cancel" prompt.
+- Builds started via `codebuild_trigger_build` are tracked in the same `AppStore` as tree-view-triggered builds (Active Builds, Failed Builds attribution, TreeView status) and ride the same adaptive-polling budget - there is no separate agent-only state or polling loop.
+- Read-only tools bound their own output (`codebuild_get_build_status` accepts at most 100 build IDs per call; `codebuild_list_recent_builds` is capped at 100 results per call and reports `truncated` when more history may exist) so a single tool call can't silently fan out into unbounded AWS requests or model context.
+
+**Tools:**
+
+| Tool name | Mutating? | Purpose | Required IAM permission(s) |
+| --- | --- | --- | --- |
+| `codebuild_trigger_build` | Yes | Starts a build for a named project in the user's selected (or an explicitly named) profile/region, using its default source version or an optional branch/tag/commit | `codebuild:StartBuild` |
+| `codebuild_list_projects` | No | Lists CodeBuild project names in the user's selected (or an explicitly named) profile/region | `codebuild:ListProjects` |
+| `codebuild_get_build_status` | No | Fetches current status for up to 100 build IDs | `codebuild:BatchGetBuilds` |
+| `codebuild_list_recent_builds` | No | Lists recent build history (status, source version, timing) for one project, up to 100 results | `codebuild:ListBuildsForProject`, `codebuild:BatchGetBuilds` |
+
+No additional IAM permissions are required beyond what the equivalent tree-view actions already use, and `iam:PassRole` is never required (verified against the AWS Service Authorization Reference: it is only a dependent action for `StartBuild`/`UpdateProject` when a `serviceRoleOverride`/`serviceRole` field is set, which this feature never does).
+
+**Out of scope (by design, for this release):** build-scoped overrides, permanent project configuration changes, stop/cancel, and retry are not agent-callable. This is a deliberate, narrower surface than the human command palette, not an oversight - see the project's design review history for the reasoning before expanding it.
+
+**Forward-looking guardrail for future tools:** none of the current tools return CodeBuild project environment variable values (`codebuild_list_projects` returns only project names). If a future agent tool ever surfaces project environment variables (e.g. an agent-callable equivalent of "Edit Environment Variables"), `PLAINTEXT`-typed variable *values* must be redacted by default in that tool's output (show `name`+`type`, mask the `value`) before it ships - regardless of what the human-facing QuickPick UI shows, since tool output can be sent to a remote chat model backend and potentially persisted in chat history. `PARAMETER_STORE`/`SECRETS_MANAGER`-typed values are lower risk since AWS stores only the parameter/secret *name* in those cases, not the resolved secret content.
 
 ## Commands and Registrations
 
@@ -65,6 +99,7 @@ This document is the exhaustive reference for supported behavior in the current 
 | `codebuild.editEnvironmentVariables` | Edit Environment Variables | BuildCompanion |
 | `codebuild.editProjectConfiguration` | Edit Project Configuration... | BuildCompanion |
 | `codebuild.selectAllProjects` | Select All Visible Projects | BuildCompanion |
+| `codebuild.clearProjectSelection` | Clear Project Selection | BuildCompanion |
 | `codebuild.deployAll` | Deploy Selected Projects | BuildCompanion |
 | `codebuild.setBranch` | Set Branch | BuildCompanion |
 | `codebuild.clearAllBranches` | Clear All Saved Branches | BuildCompanion |
@@ -86,6 +121,7 @@ This document is the exhaustive reference for supported behavior in the current 
 - `onCommand:codebuild.viewLogs`
 - `onCommand:codebuild.viewFullLogs`
 - `onCommand:codebuild.selectAllProjects`
+- `onCommand:codebuild.clearProjectSelection`
 - `onCommand:codebuild.deployAll`
 - `onCommand:codebuild.setBranch`
 - `onCommand:codebuild.clearAllBranches`
@@ -108,10 +144,11 @@ This document is the exhaustive reference for supported behavior in the current 
 - `codebuild.viewFullLogs`: `view == codebuildView && viewItem == buildInProgress`
 - `codebuild.cancelBuild`: `view == codebuildView && viewItem == buildInProgress`
 - `codebuild.deployAll`: `view == codebuildView && viewItem == projectsRoot`
+- `codebuild.clearProjectSelection`: `view == codebuildView && viewItem == projectsRoot && codebuild.hasSelectedProjects` — inline icon on the Projects header and in its right-click menu
 
 #### `editor/title`
 
-- `codebuild.viewFullLogs`: `resourceScheme == codebuild-logs` — shown as a toolbar button on any open per-build log viewer tab (tailing or full), so the entire log can be loaded without going back to the tree.
+- `codebuild.viewFullLogs`: `activeWebviewPanelId == 'codebuild.buildLogs'` — shown as a toolbar button on any focused build log panel (live or full), so the entire log can be loaded without going back to the tree.
 
 #### `view/title` (toolbar)
 
@@ -121,6 +158,7 @@ This document is the exhaustive reference for supported behavior in the current 
 - `codebuild.clearProjectSearch`
 - `codebuild.cancelAllBuilds`
 - `codebuild.selectAllProjects` (only when `codebuild.canSelectMultipleProjects` is true)
+- `codebuild.clearProjectSelection` (only when `codebuild.hasSelectedProjects` is true)
 - `codebuild.deployAll`
 - `codebuild.clearAllBranches` (only when `codebuild.hasSavedBranches` is true)
 
@@ -160,6 +198,8 @@ Checkbox behavior:
 
 - Project checkboxes are shown for every currently visible project row, regardless of filter or result count, so narrowing a search down to a single match still allows selecting it into a batch.
 - `Select All Visible Projects` remains available only when there is no filter, or the filter matches more than one project.
+- `Clear Project Selection` unchecks every selected project in the current profile + region, including selected projects hidden by the current search filter; selections in other scopes are kept. It appears in the toolbar and as an inline icon on the Projects header only while something is selected (`codebuild.hasSelectedProjects`).
+- The batch deploy confirmation lists each project as `•  <project> — <branch>` (`project default` when no branch is saved or given), states the delay between builds in words, and shows at most 20 rows followed by `…and N more projects`.
 - Selection state is scoped by profile + region + project name.
 - Selecting a project (via checkbox or Select All) beyond `codebuild.batchDeploy.maxSelectedProjects` is blocked with a warning notification; a rejected checkbox reverts to unchecked.
 
@@ -179,6 +219,7 @@ Checkbox behavior:
 - History row label format: `<sourceVersion> (<initiator>)`.
 - Status shown in the tooltip is a human-readable label (e.g. `Succeeded`, `Timed Out`) via `formatBuildStatusLabel`.
 - The completion time shown in the row description and tooltip (`Completed:`/`Failed:`/`Stopped:`/`Updated:`) honors the Local/UTC toggle and always includes an explicit timezone abbreviation (e.g. `IST`, `UTC`) so it's unambiguous which one is displayed.
+- The row description also shows how long the build ran (`took 4m 12s`), and the tooltip has a `Duration:` line. The duration comes from AWS's `startTime`/`endTime` for the build; it reads `unavailable` when AWS hasn't reported an end time yet.
 - Completed and historical build rows also expose a `View Full Log` inline action (`codebuild.viewFullLogs`) alongside `Retry Build` and `View Logs`.
 
 ### Failed Builds Section
@@ -188,7 +229,7 @@ Checkbox behavior:
 - Capped at the 10 most recent entries per profile + region scope (oldest trimmed first); persisted across VS Code restarts (`globalState`).
 - An entry is automatically removed once that project's next build succeeds, regardless of how that later build was triggered.
 - Each row exposes `Retry Build`, `View Logs`, and `Dismiss Failed Build` inline actions. A `Clear Failed Builds` toolbar button (shown only when the current scope has entries) clears the whole scoped list.
-- Row label format: `<projectName> • <branch>`; description shows status and failure time (honoring the Local/UTC toggle).
+- Row label format: `<projectName> • <branch>`; description shows status, failure time (honoring the Local/UTC toggle), and how long the build ran before failing (`after 3m 5s`), which is also in the tooltip as `Ran for:`. Entries recorded by older versions have no duration and show `unavailable`.
 
 ## Authentication and Credential Handling
 
@@ -300,6 +341,7 @@ Both flows below share one QuickPick-driven "category hub" (`src/commands/projec
 - On initialization, recent active builds are loaded for selected scope.
 - `initializeCommandState` requests up to 50 builds.
 - Service clamps requested startup limit to range 20 to 50.
+- Profile/project/active-build discovery runs in the background and does not block `activate()`: the tree view and all commands are registered and usable immediately, and the tree fills in once discovery completes (reactively, via the existing store refresh mechanism). A failure here surfaces as an error notification instead of leaving the view/commands unregistered.
 
 ## Monitoring, Polling, and Notifications
 
@@ -312,18 +354,24 @@ Monitor behavior is active only when:
 
 Constants:
 
-- Base poll interval: 3000 ms
-- Min clamp: 2000 ms
-- Max clamp: 5000 ms
+- Base poll interval: 5000 ms (configurable via `codebuild.monitor.pollIntervalMs`)
+- Min clamp: 3000 ms
+- Max clamp: 15000 ms
 - Polling error notification cooldown per build: 30000 ms
 - Stale in-progress warning threshold: 2 hours
 
 Adaptive interval (when enabled):
 
-- active builds <= 2: 3000 ms
-- active builds 3 to 8: 3500 ms
-- active builds 9 to 20: 4000 ms
-- active builds >= 21: 5000 ms
+- active builds <= 2: base interval (default 5000 ms)
+- active builds 3 to 8: base + 1000 ms (default 6000 ms)
+- active builds 9 to 20: base + 3000 ms (default 8000 ms)
+- active builds >= 21: max clamp (15000 ms)
+
+Unfocused window (applies whether or not adaptive polling is enabled):
+
+- While no VS Code window is focused, the interval above is multiplied by 3, capped at 30000 ms (default: 15000 ms).
+- Regaining focus restores the normal interval and polls immediately; losing focus just waits for the next, longer tick.
+- Open log panels are not slowed down, since they may be watched on another screen.
 
 Concurrency:
 
@@ -429,24 +477,27 @@ Invalid when branch:
 
 ## Log Streaming and Failure Extraction
 
-### Per-Build Log Viewer
+### Build Log Panel
 
-- `codebuild.viewLogs` opens a dedicated, read-only virtual document (`codebuild-logs:` URI scheme) in a new editor tab beside the current editor (`vscode.ViewColumn.Beside`), instead of only relying on the shared output channel.
-- The document has no backing `FileSystemProvider`, so VS Code treats it as read-only automatically; it still supports scrolling, Find, minimap, and can be dragged into its own window like any editor tab.
-- Streamed lines are pushed to the viewer once per CloudWatch poll response (not per line), which naturally batches bursts; additional internal throttling coalesces rapid updates into at most one document refresh every 300 ms.
-- The viewer retains at most `codebuild.logsViewer.maxLines` lines (default `10000`, minimum `500`); once exceeded, the oldest lines are dropped and a truncation notice is shown.
-- Re-opening logs for the same build resets the viewer to a fresh buffer; closing the viewer tab aborts that build's log stream (via `AbortController`) so no further CloudWatch API calls are made for it.
-- The same log lines are still written to the shared `BuildCompanion` output channel (unchanged behavior); the output channel is no longer force-shown/focused when logs are opened.
+- `codebuild.viewLogs` opens a dedicated webview panel per build (`viewType` `codebuild.buildLogs`, implemented in `src/ui/buildLogsPanel.ts`), instead of only relying on the shared output channel.
+- By default (`codebuild.logsViewer.openIn: "editor"`) the panel opens as a tab beside the current editor. Its `Pop out` button moves it into its own floating window via VS Code's `workbench.action.moveEditorToNewWindow`; the button is hidden once the panel is in its own window, so it can't spawn a second one. Set the option to `"window"` to have every panel open directly in its own window. If the host can't open auxiliary windows the panel stays a normal tab.
+- The panel shows a header card (project, mode badge, live status, build ID, profile/region, retention countdown) and a toolbar: a line filter with match count, `Follow` (keep the newest line in view; turns off when you scroll up, with a `Jump to latest` button), `Wrap`, `Errors` (only error/warning lines), `Full log`, `Copy`, `Pop out`, and `Reload`. Error, warning, and CodeBuild phase lines are colored. `Ctrl+F` find also works.
+- Log text only ever reaches the webview DOM via `textContent` under a nonce-based Content-Security-Policy, so nothing a build prints can run in the panel.
+- Streamed lines are pushed to the panel once per CloudWatch poll response (not per line), and further coalesced into at most one webview message every 150 ms. No webview exists until logs are first opened, so activation cost is unchanged.
+- The panel retains at most `codebuild.logsViewer.maxLines` lines (default `10000`, minimum `500`); once exceeded, the oldest lines are dropped and a truncation notice is shown.
+- **Retention TTL (`codebuild.logsViewer.ttlMinutes`, default `15`)**: once a stream ends (build finished, full log loaded, streaming stopped or failed), its lines are kept for the TTL and then dropped from memory; an open panel then shows an "expired" notice with a `Reload logs` button. The TTL counts from the end of the stream, never from its start, so long builds are not cut off.
+- Re-opening logs for a build that is still streaming, or that finished within the TTL, just reveals the existing panel (or re-creates it from the cached lines if it was closed) without refetching. Otherwise (stopped, failed, expired) it starts a fresh stream. Closing a panel that is still streaming aborts that build's log stream (via `AbortController`) and drops its lines immediately, so no further CloudWatch API calls are made for it.
+- When a build fails, the panel's final banner includes the extracted failure summary.
+- Streamed log lines are not copied into the shared `BuildCompanion` output channel by default; set `codebuild.logsViewer.mirrorToOutputChannel` to `true` to restore that. Failure summaries and streaming status lines are always written there. The output channel is not force-shown/focused when logs are opened.
 - Before display (and before being written to the output channel), every log message is sanitized via `sanitizeLogMessageForDisplay`: ANSI color/cursor escape codes are stripped, carriage-return progress-bar overwrites (e.g. `docker pull`, `npm`, `pip` progress bars) are collapsed to their final rendered line, and any other stray C0 control character is dropped (tabs are preserved). This prevents colorized/progress-reporting build tool output from rendering as unreadable control-character glyphs.
 
 ### Full Log Snapshot (`codebuild.viewFullLogs`)
 
-- Available as an editor-title toolbar button on any open per-build log viewer tab (`resourceScheme == codebuild-logs`), and as a `View Full Log` inline action on Build History / Active Builds rows; resolves its target build either from the tree selection or from the currently active log viewer tab's stored header metadata.
-- Opens a second, independent read-only document (same `codebuild-logs:` scheme, distinguished by a `.full.log` path suffix) so the original tailing viewer is left untouched — the default "tail" viewing experience is unchanged.
+- Available as the `Full log` button in a live log panel, as an editor-title toolbar button on any focused log panel (`activeWebviewPanelId == 'codebuild.buildLogs'`), and as a `View Full Log` inline action on Build History / Active Builds rows; resolves its target build either from the tree selection or from the currently focused log panel.
+- Opens a second, independent panel (marked with a `Full log` badge) so the live panel is left untouched. It follows the same retention TTL and reuse rules as the live panel.
 - Fetches the build's entire available CloudWatch log history from the beginning (`GetLogEvents` with `startFromHead: true`), paginating until it catches up to the latest data, instead of only the recent tail. For a still-running build this returns a snapshot of everything emitted so far (it does not keep polling for new data afterward).
-- Runs under a cancellable `vscode.window.withProgress` notification that reports cumulative lines fetched; the viewer document fills in incrementally as each page arrives rather than appearing only once the fetch completes.
-- This document is unbounded: unlike the tailing viewer, it is not subject to `codebuild.logsViewer.maxLines`. Instead, the fetch itself is capped at `codebuild.logsViewer.maxFullLogLines` (default `50000`, minimum `1000`) as a safety limit; if reached, the footer explicitly states the log was truncated and names the setting to increase.
-- The header of a full-log document is marked `BuildCompanion — Build Logs (Full Log)` with an additional `Mode:` line, so it's visually distinguishable from the tailing viewer's header.
+- Runs under a cancellable `vscode.window.withProgress` notification that reports cumulative lines fetched; the panel fills in incrementally as each page arrives rather than appearing only once the fetch completes.
+- This panel is unbounded: unlike the live panel, it is not subject to `codebuild.logsViewer.maxLines`. Instead, the fetch itself is capped at `codebuild.logsViewer.maxFullLogLines` (default `50000`, minimum `1000`) as a safety limit; if reached, the final banner explicitly states the log was truncated and names the setting to increase.
 
 Log streaming (`streamBuildLogs`) details:
 
@@ -461,8 +512,7 @@ Defaults and limits:
 - Max empty polls default: 4
 - Recent line buffer default: 500 lines
 - Recent line buffer clamp: 50 to 500
-- Log location wait timeout default: 120000 ms
-- Log location timeout minimum: 5000 ms
+- Log location wait: no timeout by default. A queued/provisioning build is waited on (with a status message in the panel) until its log stream appears or the panel is closed; a project with CloudWatch logging disabled fails immediately. An optional `logLocationTimeoutMs` (minimum 5000 ms) is available to internal callers.
 - Max recoverable polling errors: 5
 - Max recoverable backoff: 10000 ms
 - Additional retry jitter: up to 250 ms
@@ -567,15 +617,23 @@ No-profile message:
 
 | Setting | Type | Default | Range | Behavior |
 | --- | --- | --- | --- | --- |
+| `codebuild.agentTools.enabled` | boolean | `false` | n/a | Register BuildCompanion's AI agent tools |
+| `codebuild.agentTools.requireExplicitScopeForBuilds` | boolean | `false` | n/a | Make agents name the profile and region to trigger a build instead of using the current selection |
 | `codebuild.monitor.adaptivePolling` | boolean | `true` | n/a | Adaptive interval scaling by active build count |
+| `codebuild.monitor.pollIntervalMs` | integer | `5000` | `3000..15000` | Base interval between active-build status checks |
 | `codebuild.monitor.maxConcurrentStatusChecks` | integer | `6` | `1..20` | Max parallel status polling checks |
 | `codebuild.performanceDiagnostics.enabled` | boolean | `false` | n/a | Periodic monitor performance logs |
 | `codebuild.logging.maxOutputLines` | integer | `8000` | `0` or `>=1000` | Output history truncation threshold |
 | `codebuild.logging.verbose` | boolean | `false` | n/a | Redaction toggle for identifiers |
-| `codebuild.logsViewer.maxLines` | integer | `10000` | `>=500` | Per-build log viewer line-retention cap before truncation |
+| `codebuild.logsViewer.maxLines` | integer | `10000` | `>=500` | Live log panel line-retention cap before truncation |
 | `codebuild.logsViewer.maxFullLogLines` | integer | `50000` | `>=1000` | Safety cap on total lines fetched by "View Full Log" |
+| `codebuild.logsViewer.ttlMinutes` | integer | `15` | `1..1440` | How long a finished log session's lines are kept before being dropped |
+| `codebuild.logsViewer.openIn` | string | `"editor"` | `editor`/`window` | Open log panels as tabs, or directly in their own window |
+| `codebuild.logsViewer.mirrorToOutputChannel` | boolean | `false` | n/a | Also copy every streamed log line into the output channel |
 | `codebuild.batchDeploy.maxSelectedProjects` | integer | `25` | `1..100` | Maximum projects selectable at once for a batch deployment |
 | `codebuild.localTimeZone` | string | `""` | valid IANA zone or empty | Overrides auto-detected system timezone used for the "Local" build time display; falls back to auto-detect on empty/invalid value |
+| `codebuild.buildHistory.maxEntriesPerProject` | integer | `20` | `1..100` | Builds loaded per project in Build History |
+| `codebuild.useFipsEndpoint` | boolean | `false` | n/a | Route CodeBuild and CloudWatch Logs requests to AWS FIPS endpoints; `AWS_USE_FIPS_ENDPOINT` is honored when off. Endpoint only; the extension itself is not FIPS-validated |
 
 ## Environment Variable Reference
 
@@ -599,8 +657,8 @@ No-profile message:
 | Batch deploy | min delay | 1000 ms |
 | Batch deploy | max delay | 60000 ms |
 | Batch deploy | cancellation check interval | 250 ms |
-| Monitor | default poll interval | 3000 ms |
-| Monitor | poll interval bounds | 2000 to 5000 ms |
+| Monitor | default poll interval (configurable) | 5000 ms |
+| Monitor | poll interval bounds | 3000 to 15000 ms |
 | Monitor | stale build warning age | 2 hours |
 | Monitor | polling error notification cooldown | 30000 ms |
 | Monitor | default max concurrent checks | 6 |

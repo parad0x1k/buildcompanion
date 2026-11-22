@@ -9,10 +9,19 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same PR makes the older run's result irrelevant; cancel it instead of
+# queuing a full xvfb + VS Code test run. Runs on other refs (e.g. main) get a unique group so they
+# are neither cancelled nor replaced while queued.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     name: Compile and audit
     runs-on: ubuntu-latest
+    # A hung VS Code download/launch would otherwise hold the runner for GitHub's 6-hour default.
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -21,7 +30,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # @vscode/test-cli and @vscode/test-electron require Node >= 22; Node 20 is end-of-life.
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -35,3 +45,8 @@ jobs:
 
       - name: Audit production dependencies
         run: npm run audit
+
+      # Runs vscode:prepublish (type-check + production bundle) and vsce's manifest checks, e.g. the
+      # @types/vscode <= engines.vscode rule, so packaging problems surface on the PR, not at publish.
+      - name: Package VSIX
+        run: npx vsce package --out buildcompanion.vsix

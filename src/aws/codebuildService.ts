@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import {
     BatchGetBuildsCommand,
     BatchGetProjectsCommand,
@@ -40,6 +41,10 @@ export type BuildLogsLocation = {
     status: BuildStatus;
     logGroupName?: string;
     logStreamName?: string;
+    /** CodeBuild's raw `currentPhase` (SUBMITTED, QUEUED, PROVISIONING, BUILD, ...). */
+    currentPhase?: string;
+    /** True when the build has CloudWatch logging turned off, so no log stream will ever appear. */
+    cloudWatchLogsDisabled?: boolean;
 };
 
 const DEFAULT_BUILD_HISTORY_LIMIT = 20;
@@ -50,6 +55,21 @@ const STARTUP_ACTIVE_BUILDS_DEFAULT_LIMIT = 30;
 const STARTUP_ACTIVE_BUILDS_MAX_PAGES = 10;
 const BATCH_GET_BUILDS_MAX_IDS = 100;
 const MAX_PROJECT_LIST_PAGES = 100;
+const IDEMPOTENCY_TOKEN_BUCKET_MS = 60_000;
+
+/**
+ * Derives a deterministic CodeBuild idempotencyToken from the logical request identity plus a
+ * short time bucket. CodeBuild only matches a token against a prior request for 5 minutes (see
+ * StartBuild/RetryBuild's idempotencyToken docs), so this only collapses genuine rapid-fire
+ * duplicates (a tool/network retry, a double-submitted confirmation) into a single build; a
+ * later, intentionally separate trigger of the same project/branch gets a fresh token once the
+ * bucket has moved on, and is unaffected once AWS's own 5-minute window has elapsed regardless.
+ */
+function buildIdempotencyToken(parts: Array<string | undefined>): string {
+    const bucket = Math.floor(Date.now() / IDEMPOTENCY_TOKEN_BUCKET_MS);
+    const identity = [...parts.map((part) => part ?? ""), String(bucket)].join("|");
+    return createHash("sha256").update(identity).digest("hex");
+}
 
 export function isBuildInProgress(build: BuildState | null): boolean {
     return Boolean(build && build.status === "IN_PROGRESS");
@@ -104,7 +124,9 @@ function toBuildLogsLocation(build: Build): BuildLogsLocation | null {
         projectName: build.projectName,
         status: normalizeBuildStatus(build.buildStatus),
         logGroupName: build.logs?.groupName,
-        logStreamName: build.logs?.streamName
+        logStreamName: build.logs?.streamName,
+        currentPhase: build.currentPhase,
+        cloudWatchLogsDisabled: build.logs?.cloudWatchLogs?.status === "DISABLED"
     };
 }
 
@@ -223,7 +245,8 @@ export async function startCodeBuild(
         const normalizedBranch = branch?.trim();
         const response = await client.send(new StartBuildCommand({
             projectName: normalizedProjectName,
-            sourceVersion: normalizedBranch ? normalizedBranch : undefined
+            sourceVersion: normalizedBranch ? normalizedBranch : undefined,
+            idempotencyToken: buildIdempotencyToken(["StartBuild", profile, region, normalizedProjectName, normalizedBranch])
         }));
 
         const buildState = response.build ? toBuildState(response.build, profile, region) : null;
@@ -548,10 +571,19 @@ export async function listRecentBuildHistoryForProject(
             return [];
         }
 
-        const detailsResponse = await client.send(new BatchGetBuildsCommand({ ids: limitedBuildIds }));
-        const byId = new Map((detailsResponse.builds ?? [])
-            .filter((build): build is Build => Boolean(build.id))
-            .map((build) => [build.id as string, build]));
+        // Chunk at CodeBuild's BatchGetBuilds limit (same as getBuildStatuses) so this stays
+        // correct if normalizedLimit is ever configured above BATCH_GET_BUILDS_MAX_IDS; today's
+        // only caller hardcodes a limit of 20, which never actually triggered a second page.
+        const byId = new Map<string, Build>();
+        for (let index = 0; index < limitedBuildIds.length; index += BATCH_GET_BUILDS_MAX_IDS) {
+            const idsChunk = limitedBuildIds.slice(index, index + BATCH_GET_BUILDS_MAX_IDS);
+            const detailsResponse = await client.send(new BatchGetBuildsCommand({ ids: idsChunk }));
+            for (const build of detailsResponse.builds ?? []) {
+                if (build.id) {
+                    byId.set(build.id, build);
+                }
+            }
+        }
 
         return limitedBuildIds
             .map((id) => byId.get(id))
@@ -587,7 +619,10 @@ export async function retryBuild(
             secretStorage: options?.secretStorage
         });
 
-        const response = await client.send(new RetryBuildCommand({ id: normalizedBuildId }), {
+        const response = await client.send(new RetryBuildCommand({
+            id: normalizedBuildId,
+            idempotencyToken: buildIdempotencyToken(["RetryBuild", profile, region, normalizedBuildId])
+        }), {
             abortSignal: options?.signal
         });
 
@@ -1000,7 +1035,15 @@ export async function startCodeBuildWithOverrides(
             })),
             buildspecOverride: overrides.buildspecOverride,
             timeoutInMinutesOverride: overrides.timeoutInMinutesOverride,
-            queuedTimeoutInMinutesOverride: overrides.queuedTimeoutInMinutesOverride
+            queuedTimeoutInMinutesOverride: overrides.queuedTimeoutInMinutesOverride,
+            idempotencyToken: buildIdempotencyToken([
+                "StartBuildWithOverrides",
+                profile,
+                region,
+                normalizedProjectName,
+                normalizedBranch,
+                JSON.stringify(overrides)
+            ])
         }));
 
         const buildState = response.build ? toBuildState(response.build, profile, region) : null;

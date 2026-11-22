@@ -24,6 +24,17 @@ import {
 
 const MAX_REFRESH_RETRIES = 5;
 
+/**
+ * Non-modal accessor for the destructive-action block check: returns the block reason (if any)
+ * without any UI side effect. `ensureDestructiveActionsAllowed` below wraps this with the
+ * human-facing blocking modal + "Switch Profile" flow; callers that can't show a native modal
+ * (e.g. an agent tool invocation) should call this directly and surface the reason as a
+ * structured result instead.
+ */
+export function getDestructiveActionBlockReason(store: AppStore, profile: string, region: string): string | undefined {
+    return store.getDestructiveActionBlockForScope(profile, region);
+}
+
 export async function ensureDestructiveActionsAllowed(
     context: vscode.ExtensionContext,
     store: AppStore,
@@ -31,7 +42,7 @@ export async function ensureDestructiveActionsAllowed(
     region: string,
     actionLabel: string
 ): Promise<boolean> {
-    const blockReason = store.getDestructiveActionBlockForScope(profile, region);
+    const blockReason = getDestructiveActionBlockReason(store, profile, region);
     if (!blockReason) {
         return true;
     }
@@ -60,7 +71,9 @@ export async function refreshProfilesAndProjects(
 ): Promise<void> {
     const previousState = store.getState();
 
+    const profilesStartedAtMs = Date.now();
     const profiles = await listAwsProfiles({ secretStorage: context.secrets });
+    logInfo(`[REFRESH] Discovered ${profiles.length} AWS profile(s) in ${Date.now() - profilesStartedAtMs}ms`);
     store.setProfiles(profiles);
 
     const currentProfile = previousState.currentProfile;
@@ -94,13 +107,16 @@ export async function refreshProfilesAndProjects(
     }
 
     store.setCurrentProfile(selectedProfile.name);
+    options.onScopeResolved?.(selectedProfile.name, activeRegion);
 
     let retryCount = 0;
     while (true) {
         try {
+            const projectsStartedAtMs = Date.now();
             const projects = await listCodeBuildProjects(selectedProfile.name, activeRegion, {
                 secretStorage: context.secrets
             });
+            logInfo(`[REFRESH] Loaded ${projects.length} CodeBuild project(s) for ${formatSanitizedScope(selectedProfile.name, activeRegion)} in ${Date.now() - projectsStartedAtMs}ms`);
 
             store.batchUpdate(() => {
                 store.setCurrentProfile(selectedProfile.name);

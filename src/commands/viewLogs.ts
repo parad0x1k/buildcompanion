@@ -12,7 +12,7 @@ import {
     resolveProjectNameFromArg,
     sanitizeBuildId
 } from "./shared";
-import { buildLogsDocumentUri, getBuildLogsDocumentProvider } from "../ui/buildLogsViewer";
+import { getBuildLogsPanelManager, type BuildLogsOpenResult } from "../ui/buildLogsPanel";
 
 export async function viewLogs(
     context: vscode.ExtensionContext,
@@ -69,22 +69,33 @@ export async function viewLogs(
     const resolvedBuildId = buildId;
     const resolvedProjectName = projectName ?? "unknown-project";
 
-    const provider = getBuildLogsDocumentProvider();
-    const uri = buildLogsDocumentUri(profile, region, resolvedBuildId);
-    provider.open(uri, { projectName: resolvedProjectName, profile, region, buildId: resolvedBuildId });
-
+    let session: BuildLogsOpenResult;
     try {
-        const document = await vscode.workspace.openTextDocument(uri);
-        await vscode.window.showTextDocument(document, {
-            preview: false,
-            viewColumn: vscode.ViewColumn.Beside
+        session = await getBuildLogsPanelManager().open({
+            projectName: resolvedProjectName,
+            profile,
+            region,
+            buildId: resolvedBuildId,
+            mode: "tail"
         });
     } catch (error) {
-        logError(`[LOGS] Failed to open log viewer document: ${sanitizeLogValue(String(error))}`);
+        logError(`[LOGS] Failed to open log panel: ${sanitizeLogValue(String(error))}`);
+        void notify("error", `Unable to open logs for ${resolvedBuildId} in ${formatScope(profile, region)}`);
+        return;
     }
 
+    // Still streaming, or finished within the retention window: the panel was just revealed.
+    if (session.reused) {
+        return;
+    }
+
+    const { handle } = session;
     const abortController = new AbortController();
-    provider.registerCanceller(uri, () => abortController.abort());
+    handle.registerCanceller(() => abortController.abort());
+
+    // streamBuildLogs reports the failure summary before onComplete; keep it so the final
+    // footer shows it instead of being replaced by the generic end-of-stream line.
+    let failureSummary: string | undefined;
 
     void streamBuildLogs(
         profile,
@@ -93,21 +104,28 @@ export async function viewLogs(
         {
             secretStorage: context.secrets,
             signal: abortController.signal,
-            onLogLines: (lines: string[]) => provider.appendLines(uri, lines),
+            onWaiting: (message: string) => handle.setWaitingMessage(message),
+            onLogLines: (lines: string[]) => handle.appendLines(lines),
             onComplete: (status) => {
-                provider.setFooter(uri, `── End of log stream (build status: ${status}) ──`);
+                handle.finish(
+                    "complete",
+                    failureSummary
+                        ? `Build ${status}. Likely cause:\n${failureSummary}`
+                        : `End of log stream (build status: ${status}).`,
+                    status
+                );
             },
             onFailureSummary: (summary: string) => {
                 const firstLine = summary.split("\n")[0] ?? "Build failed";
                 logError(
                     `[LOGS] Build failed for ${sanitizeBuildId(resolvedBuildId)} in ${formatSanitizedScope(profile, region)}: ${sanitizeLogValue(firstLine)}`
                 );
-                provider.setFooter(uri, `── Build FAILED ──\n${summary}`);
+                failureSummary = summary;
             }
         }
     ).catch((error) => {
         if (isLogStreamingCancellationError(error)) {
-            provider.setFooter(uri, "── Log streaming stopped ──");
+            handle.finish("stopped", "Log streaming stopped.");
             return;
         }
 
@@ -118,7 +136,7 @@ export async function viewLogs(
         });
 
         logError(`[LOGS] Log streaming failed in ${formatSanitizedScope(profile, region)}: ${sanitizeLogValue(message)}`);
-        provider.setFooter(uri, `── Log streaming failed ──\n${message}`);
+        handle.finish("failed", `Log streaming failed.\n${message}`);
         void notify("error", `Log streaming failed for ${resolvedBuildId} in ${formatScope(profile, region)}`);
     });
 }

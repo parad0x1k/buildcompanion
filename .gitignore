@@ -3,6 +3,7 @@
 # Build outputs
 node_modules/
 out/
+dist/
 
 # Packaging artefacts
 *.vsix
@@ -18,6 +19,13 @@ deps-top.txt
 
 # VS Code test runner
 .vscode-test/
+
+# Local MCP server configuration (personal tool setup, not shared with the team)
+.mcp.json
+.vscode/mcp.json
+
+# Local AI assistant instructions (personal, not shared with the team)
+.github/copilot-instructions.md
 
 # Logs
 *.log

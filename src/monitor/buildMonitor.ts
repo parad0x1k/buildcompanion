@@ -12,9 +12,9 @@ import { formatProjectScope, notify } from "../notifications/notifier";
 import { retryBuild } from "../commands/retryBuild";
 import { persistFailedBuilds } from "../state/failedBuildsPersistence";
 
-const DEFAULT_POLL_INTERVAL_MS = 3000;
-const MIN_POLL_INTERVAL_MS = 2000;
-const MAX_POLL_INTERVAL_MS = 5000;
+const DEFAULT_POLL_INTERVAL_MS = 5000;
+const MIN_POLL_INTERVAL_MS = 3000;
+const MAX_POLL_INTERVAL_MS = 15000;
 const POLL_ERROR_NOTIFICATION_COOLDOWN_MS = 30000;
 const MAX_IN_PROGRESS_AGE_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_MAX_CONCURRENT_STATUS_CHECKS = 6;
@@ -26,8 +26,43 @@ const CIRCUIT_BREAKER_BASE_BACKOFF_MS = 5000;
 const CIRCUIT_BREAKER_MAX_BACKOFF_MS = 5 * 60 * 1000;
 
 const ADAPTIVE_POLLING_CONFIG_KEY = "monitor.adaptivePolling";
+const POLL_INTERVAL_CONFIG_KEY = "monitor.pollIntervalMs";
 const MAX_CONCURRENT_STATUS_CHECKS_CONFIG_KEY = "monitor.maxConcurrentStatusChecks";
 const PERFORMANCE_DIAGNOSTICS_ENABLED_KEY = "performanceDiagnostics.enabled";
+
+// While no VS Code window is focused nobody is looking at the tree, so status checks slow down
+// by this factor (capped) to cut AWS calls and throttling risk. Regaining focus polls at once.
+const UNFOCUSED_POLL_MULTIPLIER = 3;
+const MAX_UNFOCUSED_POLL_INTERVAL_MS = 30000;
+
+/**
+ * Interval between active-build status checks. Adaptive polling stretches the base interval as
+ * more builds run concurrently; an unfocused window stretches it further.
+ */
+export function resolveMonitorPollIntervalMs(input: {
+    baseIntervalMs: number;
+    activeBuildCount: number;
+    adaptivePolling: boolean;
+    windowFocused: boolean;
+}): number {
+    let intervalMs = input.baseIntervalMs;
+
+    if (input.adaptivePolling) {
+        if (input.activeBuildCount > 20) {
+            intervalMs = MAX_POLL_INTERVAL_MS;
+        } else if (input.activeBuildCount > 8) {
+            intervalMs = Math.min(MAX_POLL_INTERVAL_MS, intervalMs + 3000);
+        } else if (input.activeBuildCount > 2) {
+            intervalMs = Math.min(MAX_POLL_INTERVAL_MS, intervalMs + 1000);
+        }
+    }
+
+    if (!input.windowFocused) {
+        intervalMs = Math.max(intervalMs, Math.min(MAX_UNFOCUSED_POLL_INTERVAL_MS, intervalMs * UNFOCUSED_POLL_MULTIPLIER));
+    }
+
+    return intervalMs;
+}
 
 function formatBranchForNotification(branch?: string): string {
     const normalizedBranch = branch?.trim();
@@ -43,7 +78,7 @@ function formatSanitizedProjectScope(projectName: string, profile: string, regio
 }
 
 export class BuildMonitor implements vscode.Disposable {
-    private readonly pollIntervalMs: number;
+    private pollIntervalMs: number;
     private timer: NodeJS.Timeout | null = null;
     private currentPollIntervalMs: number | null = null;
     private isTickRunning = false;
@@ -53,6 +88,7 @@ export class BuildMonitor implements vscode.Disposable {
     private readonly scopePollBackoffUntilMs = new Map<string, number>();
     private readonly storeRefreshSubscription: vscode.Disposable;
     private readonly configurationSubscription: vscode.Disposable;
+    private readonly windowStateSubscription: vscode.Disposable;
     private adaptivePollingEnabled = true;
     private maxConcurrentStatusChecks = DEFAULT_MAX_CONCURRENT_STATUS_CHECKS;
     private diagnosticsEnabled = false;
@@ -62,14 +98,15 @@ export class BuildMonitor implements vscode.Disposable {
     constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly store: AppStore,
-        pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS
+        private readonly defaultPollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS
     ) {
-        this.pollIntervalMs = Math.max(MIN_POLL_INTERVAL_MS, Math.min(MAX_POLL_INTERVAL_MS, pollIntervalMs));
+        this.pollIntervalMs = this.clampPollIntervalMs(defaultPollIntervalMs);
         this.loadSettings();
 
         this.configurationSubscription = vscode.workspace.onDidChangeConfiguration((event) => {
             if (
                 event.affectsConfiguration(`codebuild.${ADAPTIVE_POLLING_CONFIG_KEY}`)
+                || event.affectsConfiguration(`codebuild.${POLL_INTERVAL_CONFIG_KEY}`)
                 || event.affectsConfiguration(`codebuild.${MAX_CONCURRENT_STATUS_CHECKS_CONFIG_KEY}`)
                 || event.affectsConfiguration(`codebuild.${PERFORMANCE_DIAGNOSTICS_ENABLED_KEY}`)
             ) {
@@ -79,6 +116,12 @@ export class BuildMonitor implements vscode.Disposable {
         });
 
         this.storeRefreshSubscription = this.store.onDidRefresh(() => {
+            this.reconcilePollingState();
+        });
+
+        // Focus changes the interval (see resolveMonitorPollIntervalMs); reconciling restarts the
+        // timer at the new interval and, on regaining focus, runs a tick immediately.
+        this.windowStateSubscription = vscode.window.onDidChangeWindowState(() => {
             this.reconcilePollingState();
         });
     }
@@ -95,7 +138,12 @@ export class BuildMonitor implements vscode.Disposable {
         this.disposed = true;
         this.configurationSubscription.dispose();
         this.storeRefreshSubscription.dispose();
+        this.windowStateSubscription.dispose();
         this.stop();
+    }
+
+    private clampPollIntervalMs(value: number): number {
+        return Math.max(MIN_POLL_INTERVAL_MS, Math.min(MAX_POLL_INTERVAL_MS, value));
     }
 
     private loadSettings(): void {
@@ -103,6 +151,14 @@ export class BuildMonitor implements vscode.Disposable {
 
         this.adaptivePollingEnabled = config.get<boolean>(ADAPTIVE_POLLING_CONFIG_KEY, true);
         this.diagnosticsEnabled = config.get<boolean>(PERFORMANCE_DIAGNOSTICS_ENABLED_KEY, false);
+
+        const configuredPollIntervalMs = Number(config.get<number>(
+            POLL_INTERVAL_CONFIG_KEY,
+            this.defaultPollIntervalMs
+        ));
+        this.pollIntervalMs = Number.isFinite(configuredPollIntervalMs)
+            ? this.clampPollIntervalMs(configuredPollIntervalMs)
+            : this.clampPollIntervalMs(this.defaultPollIntervalMs);
 
         const configuredMaxChecks = Number(config.get<number>(
             MAX_CONCURRENT_STATUS_CHECKS_CONFIG_KEY,
@@ -137,24 +193,12 @@ export class BuildMonitor implements vscode.Disposable {
     }
 
     private resolvePollIntervalMs(state: Readonly<ReturnType<AppStore["getState"]>>): number {
-        if (!this.adaptivePollingEnabled) {
-            return this.pollIntervalMs;
-        }
-
-        const activeBuildCount = state.activeBuilds.length;
-        if (activeBuildCount <= 2) {
-            return this.pollIntervalMs;
-        }
-
-        if (activeBuildCount <= 8) {
-            return Math.min(MAX_POLL_INTERVAL_MS, this.pollIntervalMs + 500);
-        }
-
-        if (activeBuildCount <= 20) {
-            return Math.min(MAX_POLL_INTERVAL_MS, this.pollIntervalMs + 1000);
-        }
-
-        return MAX_POLL_INTERVAL_MS;
+        return resolveMonitorPollIntervalMs({
+            baseIntervalMs: this.pollIntervalMs,
+            activeBuildCount: state.activeBuilds.length,
+            adaptivePolling: this.adaptivePollingEnabled,
+            windowFocused: vscode.window.state.focused
+        });
     }
 
     private maybeLogDiagnostics(summary: string): void {
@@ -177,16 +221,34 @@ export class BuildMonitor implements vscode.Disposable {
             return;
         }
 
+        const previousPollIntervalMs = this.timer ? this.currentPollIntervalMs : null;
         if (this.timer) {
             clearInterval(this.timer);
         }
 
         this.currentPollIntervalMs = nextPollIntervalMs;
         this.timer = setInterval(() => {
-            void this.tick();
+            this.runTick();
         }, nextPollIntervalMs);
 
-        void this.tick();
+        // Poll right away when polling starts or speeds up (e.g. the window regained focus); a
+        // slow-down (window lost focus) just waits for the next, longer interval.
+        if (previousPollIntervalMs === null || nextPollIntervalMs < previousPollIntervalMs) {
+            this.runTick();
+        }
+    }
+
+    /**
+     * Fire-and-forget wrapper around tick(). tick() has a try/finally but no catch, so anything
+     * that throws inside it (a store update, a notification helper) would otherwise surface as an
+     * unhandled promise rejection from a bare `void this.tick()`.
+     */
+    private runTick(): void {
+        this.tick().catch((error: unknown) => {
+            logError(
+                `[BUILD] Build monitor tick failed: ${sanitizeLogValue(error instanceof Error ? error.message : String(error))}`
+            );
+        });
     }
 
     private shouldNotifyPollingError(buildId: string): boolean {
@@ -305,6 +367,12 @@ export class BuildMonitor implements vscode.Disposable {
             );
 
             if (wasExtensionTriggered) {
+                const failedAt = new Date();
+                const startedAtMs = build.startTime ? new Date(build.startTime).getTime() : Number.NaN;
+                const durationSeconds = Number.isFinite(startedAtMs) && failedAt.getTime() >= startedAtMs
+                    ? Math.round((failedAt.getTime() - startedAtMs) / 1000)
+                    : undefined;
+
                 this.store.addFailedBuild({
                     id: build.id,
                     projectName: build.projectName,
@@ -312,18 +380,19 @@ export class BuildMonitor implements vscode.Disposable {
                     profile: build.profile,
                     region: build.region,
                     sourceVersion: build.sourceVersion,
-                    failedAt: new Date().toISOString()
+                    failedAt: failedAt.toISOString(),
+                    durationSeconds
                 });
                 void persistFailedBuilds(this.context, this.store.getState().failedBuilds);
             }
 
             // Lets the user restart the build directly from the notification, without opening Build History.
-            void notify("error", failureMessage, { actions: ["Retry Build"] }).then((selection) => {
+            void notify("error", failureMessage, { actions: ["Retry Build"] }).then(async (selection) => {
                 if (selection !== "Retry Build") {
                     return;
                 }
 
-                void retryBuild(this.context, this.store, {
+                await retryBuild(this.context, this.store, {
                     id: build.id,
                     projectName: build.projectName,
                     status: build.status,
@@ -331,6 +400,10 @@ export class BuildMonitor implements vscode.Disposable {
                     region: build.region,
                     sourceVersion: build.sourceVersion
                 });
+            }).catch((error: unknown) => {
+                logError(
+                    `[BUILD] Retry Build from failure notification failed: ${sanitizeLogValue(error instanceof Error ? error.message : String(error))}`
+                );
             });
         }
     }

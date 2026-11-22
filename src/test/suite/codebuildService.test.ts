@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict";
 import {
     BatchGetBuildsCommand,
     BatchGetProjectsCommand,
+    ListBuildsForProjectCommand,
     ListCuratedEnvironmentImagesCommand,
     ListProjectsCommand,
     RetryBuildCommand,
@@ -14,6 +15,7 @@ import {
     getBuildStatus,
     listCodeBuildProjects,
     listCuratedEnvironmentImages,
+    listRecentBuildHistoryForProject,
     retryBuild,
     setProjectEnvironmentVariables,
     startCodeBuild,
@@ -75,6 +77,46 @@ describe("aws/codebuildService", () => {
             const calls = codeBuildMock.commandCalls(StartBuildCommand);
             assert.equal(calls[calls.length - 1].args[0].input.sourceVersion, undefined);
         });
+
+        it("passes a non-empty idempotencyToken to StartBuild", async () => {
+            codeBuildMock.on(StartBuildCommand).resolves({
+                build: { id: "demo:456", projectName: "demo", buildStatus: "IN_PROGRESS" }
+            });
+
+            await startCodeBuild("dev", "us-east-1", "demo", "main");
+
+            const token = codeBuildMock.commandCalls(StartBuildCommand).at(-1)?.args[0].input.idempotencyToken;
+            assert.equal(typeof token, "string");
+            assert.ok(token && token.length > 0);
+        });
+
+        it("gives different projects a different idempotencyToken", async () => {
+            codeBuildMock.on(StartBuildCommand).resolves({
+                build: { id: "demo:456", projectName: "demo", buildStatus: "IN_PROGRESS" }
+            });
+
+            await startCodeBuild("dev", "us-east-1", "demo-a", "main");
+            await startCodeBuild("dev", "us-east-1", "demo-b", "main");
+
+            const calls = codeBuildMock.commandCalls(StartBuildCommand);
+            assert.notEqual(calls[0].args[0].input.idempotencyToken, calls[1].args[0].input.idempotencyToken);
+        });
+
+        it("gives two back-to-back identical-input calls the SAME idempotencyToken (same time bucket)", async () => {
+            // This is the property that actually makes the token useful: AWS only collapses a
+            // duplicate StartBuild request into one build if the token *matches* a prior one
+            // within its 5-minute window. Presence and cross-input differentiation (covered by
+            // the two tests above) don't by themselves prove reuse-for-retry-safety.
+            codeBuildMock.on(StartBuildCommand).resolves({
+                build: { id: "demo:456", projectName: "demo", buildStatus: "IN_PROGRESS" }
+            });
+
+            await startCodeBuild("dev", "us-east-1", "demo", "main");
+            await startCodeBuild("dev", "us-east-1", "demo", "main");
+
+            const calls = codeBuildMock.commandCalls(StartBuildCommand);
+            assert.equal(calls[0].args[0].input.idempotencyToken, calls[1].args[0].input.idempotencyToken);
+        });
     });
 
     describe("getBuildStatus", () => {
@@ -109,6 +151,18 @@ describe("aws/codebuildService", () => {
 
             const calls = codeBuildMock.commandCalls(RetryBuildCommand);
             assert.equal(calls[calls.length - 1].args[0].input.id, "demo:111");
+        });
+
+        it("passes a non-empty idempotencyToken to RetryBuild", async () => {
+            codeBuildMock.on(RetryBuildCommand).resolves({
+                build: { id: "demo:999", projectName: "demo", buildStatus: "IN_PROGRESS", sourceVersion: "main" }
+            });
+
+            await retryBuild("dev", "us-east-1", "demo:111");
+
+            const token = codeBuildMock.commandCalls(RetryBuildCommand).at(-1)?.args[0].input.idempotencyToken;
+            assert.equal(typeof token, "string");
+            assert.ok(token && token.length > 0);
         });
 
         it("normalizes a missing source version to 'default'", async () => {
@@ -424,6 +478,46 @@ describe("aws/codebuildService", () => {
 
             assert.equal(build.id, "demo:999");
             assert.equal(build.status, "IN_PROGRESS");
+        });
+
+        it("gives different override sets a different idempotencyToken", async () => {
+            codeBuildMock.on(StartBuildCommand).resolves({
+                build: { id: "demo:999", projectName: "demo", buildStatus: "IN_PROGRESS" }
+            });
+
+            await startCodeBuildWithOverrides("dev", "us-east-1", "demo", { imageOverride: "aws/codebuild/standard:7.0" });
+            await startCodeBuildWithOverrides("dev", "us-east-1", "demo", { imageOverride: "aws/codebuild/standard:6.0" });
+
+            const calls = codeBuildMock.commandCalls(StartBuildCommand);
+            assert.notEqual(calls[0].args[0].input.idempotencyToken, calls[1].args[0].input.idempotencyToken);
+        });
+    });
+
+    describe("listRecentBuildHistoryForProject", () => {
+        it("returns an empty array when the project has no build history", async () => {
+            codeBuildMock.on(ListBuildsForProjectCommand).resolves({ ids: [] });
+
+            const history = await listRecentBuildHistoryForProject("dev", "us-east-1", "demo");
+
+            assert.deepEqual(history, []);
+            assert.equal(codeBuildMock.commandCalls(BatchGetBuildsCommand).length, 0);
+        });
+
+        it("chunks BatchGetBuilds at 100 ids when history exceeds the per-request limit", async () => {
+            const totalBuildIds = Array.from({ length: 150 }, (_, index) => `demo:${index}`);
+
+            codeBuildMock.on(ListBuildsForProjectCommand).resolves({ ids: totalBuildIds });
+            codeBuildMock.on(BatchGetBuildsCommand).callsFake((input: { ids?: string[] }) => ({
+                builds: (input.ids ?? []).map((id) => ({ id, projectName: "demo", buildStatus: "SUCCEEDED" as const }))
+            }));
+
+            const history = await listRecentBuildHistoryForProject("dev", "us-east-1", "demo", 150);
+
+            const batchCalls = codeBuildMock.commandCalls(BatchGetBuildsCommand);
+            assert.equal(batchCalls.length, 2);
+            assert.equal(batchCalls[0].args[0].input.ids?.length, 100);
+            assert.equal(batchCalls[1].args[0].input.ids?.length, 50);
+            assert.equal(history.length, 150);
         });
     });
 });

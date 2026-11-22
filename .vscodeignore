@@ -1,7 +1,13 @@
-# TypeScript sources — compiled output is in out/
+# TypeScript sources — compiled/bundled output is in dist/ (see esbuild.js)
 src/
 extension.ts
 tsconfig.json
+
+# out/ (tsc's per-file output, used only by the test suite) and node_modules/ (inlined into
+# dist/extension.js by esbuild) are no longer needed at runtime now that "main" points at the
+# bundled dist/extension.js — see esbuild.js.
+out/
+node_modules/
 
 # Source maps — keep .js only for distribution
 **/*.js.map
@@ -15,10 +21,14 @@ audit-report.json
 outdated-report.json
 deps-top.txt
 
-# VS Code workspace configuration
+# VS Code workspace configuration and the test runner's downloaded VS Code
 .vscode/
+.vscode-test/
 .github/
 .gitignore
+
+# Local MCP server configuration (personal tool setup, not part of the extension)
+.mcp.json
 
 # Generated packages
 *.vsix
@@ -26,6 +36,7 @@ deps-top.txt
 # Unused resource image variants (only resources/marketplace-icon.png and resources/codebuild.svg are referenced)
 resources/marketplace-icon.svg
 resources/marketplace-icon1.png
+resources/codebuild-original.svg
 resources/Media.jpeg
 resources/icon-drafts/
 
@@ -33,6 +44,8 @@ resources/icon-drafts/
 resources/gifs/
 
 # Dev tooling
+esbuild.js
+.vscode-test.mjs
 .eslintrc*
 .prettierrc*
 .editorconfig

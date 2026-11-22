@@ -104,4 +104,46 @@ describe("aws/errorHandling", () => {
         const message = getUserFriendlyErrorMessage(error);
         assert.equal(message, "Invalid AWS credentials for profile selected profile");
     });
+
+    // Regression coverage for the "no ARN/account-id leak" property: every branch of
+    // getUserFriendlyErrorMessage must return a string it authored itself, never the raw
+    // underlying error message, since that's the only thing standing between an AWS SDK
+    // error (which commonly embeds ARNs/account IDs) and a user-visible or logged surface.
+    // This matters even more once tool output can reach a remote chat model backend.
+    describe("ARN/account-id redaction (never leak raw AWS error text)", () => {
+        const fakeArn = "arn:aws:iam::123456789012:role/Example";
+        const fakeAccountId = "123456789012";
+
+        it("never surfaces a raw ARN/account-id from an unmatched (generic fallback) error", () => {
+            const error = new Error(`Internal failure referencing ${fakeArn} for account ${fakeAccountId}`);
+            const message = getUserFriendlyErrorMessage(error, { operation: "Listing projects" });
+
+            assert.doesNotMatch(message, /arn:aws/);
+            assert.doesNotMatch(message, new RegExp(fakeAccountId));
+            assert.equal(message, "Listing projects failed. Please check AWS configuration and try again.");
+        });
+
+        it("never surfaces a raw ARN/account-id from a realistic AccessDenied error message", () => {
+            const error = Object.assign(
+                new Error(
+                    `User: ${fakeArn.replace("role/Example", "user/bob")} is not authorized to perform: ` +
+                        `codebuild:StartBuild on resource: arn:aws:codebuild:us-east-1:${fakeAccountId}:project/demo`
+                ),
+                { name: "AccessDeniedException" }
+            );
+
+            const message = getUserFriendlyErrorMessage(error, {
+                profile: "dev",
+                operation: "Triggering build",
+                requiredPermissions: ["codebuild:StartBuild"]
+            });
+
+            assert.doesNotMatch(message, /arn:aws/);
+            assert.doesNotMatch(message, new RegExp(fakeAccountId));
+            assert.equal(
+                message,
+                "Triggering build failed due to missing AWS permissions for profile dev. Required IAM permission(s): codebuild:StartBuild"
+            );
+        });
+    });
 });

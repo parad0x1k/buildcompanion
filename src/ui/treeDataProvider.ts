@@ -3,7 +3,7 @@ import { filterProjectsBySearch } from "../state/store";
 import type { AppStore, BuildHistoryEntry, BuildState, BuildTimeDisplayFormat, FailedBuildEntry, Project } from "../state/store";
 import { logError, sanitizeLogValue } from "../logging/outputChannelManager";
 import { formatBuildStatusLabel } from "./statusLabels";
-import { formatBuildTimestamp } from "./timeFormatting";
+import { formatBuildTimestamp, formatElapsed, resolveBuildDurationSeconds } from "./timeFormatting";
 
 type RootNodeKind =
     | "settingsSection"
@@ -34,6 +34,7 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
     private readonly loadingHistoryKeys = new Set<string>();
     private lastCanSelectMultipleProjects: boolean | undefined;
     private lastHasSavedBranches: boolean | undefined;
+    private lastHasSelectedProjects: boolean | undefined;
     private lastHasFailedBuilds: boolean | undefined;
     private disposed = false;
     private projectVisibilityCache:
@@ -66,6 +67,18 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
             return;
         }
         this.onDidChangeTreeDataEmitter.fire();
+    }
+
+    /**
+     * Refreshes only the given node (and its descendants) instead of the whole tree. Use this
+     * when the state change is already known to be scoped to that element, to avoid forcing
+     * every other visible section (Projects, Active Builds, Failed Builds, ...) to re-render.
+     */
+    private refreshElement(element: TreeNode): void {
+        if (this.disposed) {
+            return;
+        }
+        this.onDidChangeTreeDataEmitter.fire(element);
     }
 
     private getProjectVisibility(state: ReturnType<AppStore["getState"]>): {
@@ -116,6 +129,14 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
         if (this.lastCanSelectMultipleProjects !== canSelectVisibleProjects) {
             this.lastCanSelectMultipleProjects = canSelectVisibleProjects;
             void vscode.commands.executeCommand("setContext", "codebuild.canSelectMultipleProjects", canSelectVisibleProjects);
+        }
+
+        const hasSelectedProjects = state.currentProfile
+            ? this.store.getSelectedProjects(state.currentProfile, state.currentRegion).length > 0
+            : false;
+        if (this.lastHasSelectedProjects !== hasSelectedProjects) {
+            this.lastHasSelectedProjects = hasSelectedProjects;
+            void vscode.commands.executeCommand("setContext", "codebuild.hasSelectedProjects", hasSelectedProjects);
         }
 
         const hasSavedBranches = Object.keys(state.projectBranches).length > 0;
@@ -217,23 +238,7 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
     }
 
     private formatDuration(ms?: number): string {
-        if (ms === undefined) {
-            return "Duration unavailable";
-        }
-
-        const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = totalSeconds % 60;
-
-        if (minutes === 0) {
-            return `${seconds}s`;
-        }
-
-        if (seconds === 0) {
-            return `${minutes}m`;
-        }
-
-        return `${minutes}m ${seconds}s`;
+        return formatElapsed(ms === undefined ? undefined : ms / 1000) ?? "Duration unavailable";
     }
 
     public getTreeItem(element: TreeNode): vscode.TreeItem {
@@ -427,18 +432,22 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                 const branch = element.build.sourceVersion?.trim() || "unknown";
                 const initiator = element.build.initiator?.trim() || "unknown";
                 const completionLabel = this.formatHistoryCompletionLabel(element.build, state.buildTimeDisplayFormat);
+                const durationText = formatElapsed(resolveBuildDurationSeconds(element.build));
                 const item = new vscode.TreeItem(
                     `${branch} (${initiator})`,
                     vscode.TreeItemCollapsibleState.None
                 );
-                item.description = completionLabel;
+                item.description = [completionLabel, durationText ? `took ${durationText}` : undefined]
+                    .filter((part): part is string => part !== undefined)
+                    .join(" • ") || undefined;
                 item.iconPath = this.getStatusIcon(element.build.status, "historyBuild");
                 item.tooltip = [
                     `Build ID: ${element.build.id}`,
                     `Branch: ${branch}`,
                     `Triggered by: ${initiator}`,
                     `Status: ${formatBuildStatusLabel(element.build.status)}`,
-                    completionLabel ?? "Completed/failed time: unavailable"
+                    completionLabel ?? "Completed/failed time: unavailable",
+                    `Duration: ${durationText ?? "unavailable"}`
                 ].join("\n");
                 item.contextValue = "build";
                 item.id = `codebuild.historyBuild.${element.build.id}`;
@@ -481,7 +490,10 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                     `${element.build.projectName} • ${branch}`,
                     vscode.TreeItemCollapsibleState.None
                 );
-                item.description = failedAtText ? `${statusLabel} • ${failedAtText}` : statusLabel;
+                const failedDurationText = formatElapsed(element.build.durationSeconds);
+                item.description = [statusLabel, failedAtText, failedDurationText ? `after ${failedDurationText}` : undefined]
+                    .filter((part): part is string => part !== undefined)
+                    .join(" • ");
                 item.iconPath = this.getStatusIcon(element.build.status, "historyBuild");
                 item.tooltip = [
                     `Project: ${element.build.projectName}`,
@@ -490,7 +502,8 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                     `Branch: ${branch}`,
                     `Status: ${statusLabel}`,
                     `Build ID: ${element.build.id}`,
-                    failedAtText ? `Failed: ${failedAtText}` : "Failed time unavailable"
+                    failedAtText ? `Failed: ${failedAtText}` : "Failed time unavailable",
+                    `Ran for: ${failedDurationText ?? "unavailable"}`
                 ].join("\n");
                 item.contextValue = "failedBuild";
                 item.id = `codebuild.failedBuild.${element.build.id}`;
@@ -699,7 +712,9 @@ export class CodeBuildTreeDataProvider implements vscode.TreeDataProvider<TreeNo
                         );
                     }).finally(() => {
                         this.loadingHistoryKeys.delete(loadingKey);
-                        this.refresh();
+                        // Loading only ever affects this one project's history group, so refresh
+                        // just that node rather than firing a whole-tree refresh.
+                        this.refreshElement(element);
                     });
                 }
 

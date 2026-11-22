@@ -12,10 +12,34 @@ let sharedOutputChannel: vscode.OutputChannel | undefined;
 let appendedLineCount = 0;
 let recentLinesBuffer: string[] = [];
 
+// Every log line and every sanitized identifier consults these settings, so they're read once and
+// re-read only after a `codebuild.logging.*` change instead of hitting getConfiguration() per call.
+let cachedLoggingSettings: { verbose: boolean; maxOutputLines: number } | undefined;
+let loggingSettingsSubscription: vscode.Disposable | undefined;
+
 export type LogSanitizationKind = "generic" | "profile" | "region" | "buildId";
 
+function getLoggingSettings(): { verbose: boolean; maxOutputLines: number } {
+    if (cachedLoggingSettings) {
+        return cachedLoggingSettings;
+    }
+
+    loggingSettingsSubscription ??= vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration("codebuild.logging")) {
+            cachedLoggingSettings = undefined;
+        }
+    });
+
+    const config = vscode.workspace.getConfiguration("codebuild");
+    cachedLoggingSettings = {
+        verbose: config.get<boolean>(VERBOSE_LOGGING_SETTING_KEY, false),
+        maxOutputLines: normalizeMaxOutputLines(config.get<number>(MAX_OUTPUT_LINES_SETTING_KEY, DEFAULT_MAX_OUTPUT_LINES))
+    };
+    return cachedLoggingSettings;
+}
+
 function isVerboseLoggingEnabled(): boolean {
-    return vscode.workspace.getConfiguration("codebuild").get<boolean>(VERBOSE_LOGGING_SETTING_KEY, false);
+    return getLoggingSettings().verbose;
 }
 
 function normalizeLogValue(value: unknown): string {
@@ -59,10 +83,11 @@ export function sanitizeLogValue(value: unknown, kind: LogSanitizationKind = "ge
 }
 
 function getConfiguredMaxOutputLines(): number {
-    const configured = Number(vscode.workspace.getConfiguration("codebuild").get<number>(
-        MAX_OUTPUT_LINES_SETTING_KEY,
-        DEFAULT_MAX_OUTPUT_LINES
-    ));
+    return getLoggingSettings().maxOutputLines;
+}
+
+function normalizeMaxOutputLines(value: unknown): number {
+    const configured = Number(value);
 
     if (!Number.isFinite(configured)) {
         return DEFAULT_MAX_OUTPUT_LINES;
@@ -142,6 +167,9 @@ export function logSection(title: string): void {
 export function disposeOutputChannel(): void {
     recentLinesBuffer = [];
     appendedLineCount = 0;
+    loggingSettingsSubscription?.dispose();
+    loggingSettingsSubscription = undefined;
+    cachedLoggingSettings = undefined;
     if (sharedOutputChannel) {
         sharedOutputChannel.dispose();
         sharedOutputChannel = undefined;

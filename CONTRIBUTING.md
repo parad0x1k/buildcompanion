@@ -15,7 +15,7 @@ Thanks for your interest in contributing! This project is a focused VS Code exte
 Prerequisites:
 
 - Node.js `>=20.0.0`
-- VS Code `^1.85.0`
+- VS Code `^1.95.0`
 - An AWS account you can safely test against (a sandbox or dev account is recommended)
 
 Bootstrap:
@@ -37,7 +37,7 @@ Useful scripts:
 
 | Script | Purpose |
 | --- | --- |
-| `npm run compile` | TypeScript build to `out/` |
+| `npm run compile` | TypeScript build to `out/` (used by tests) and esbuild bundle to `dist/` (loaded by the extension) |
 | `npm run watch` | TypeScript build in watch mode |
 | `npm run lint:repo` | Type-check only, no emit |
 | `npm test` | Compile, then run the automated test suite |
@@ -66,7 +66,8 @@ What is covered:
   no real AWS calls, no real credentials needed.
 - `src/git/gitService.ts` against real temporary git repositories (and the "not a repository" fallback
   path); skips gracefully if `git` is unavailable on the machine running the tests.
-- `src/ui/buildLogsViewer.ts`'s update-throttling and line-retention-cap behavior directly.
+- `src/ui/buildLogsPanel.ts`'s session lifecycle directly: line-retention cap, reuse vs. restart on re-open,
+  stale-handle isolation, and the retention TTL (with a millisecond TTL injected through the manager options).
 - Command registration: `registerCodeBuildCommands` is exercised against a fake
   `vscode.ExtensionContext`, with `src/aws/profileManager.ts` and `src/aws/codebuildService.ts` stubbed via
   Sinon so activation never touches the host machine's real AWS configuration or network.
@@ -89,8 +90,21 @@ CI (`.github/workflows/ci.yml`) runs the same suite headlessly via `xvfb-run -a 
 - Branch from `main`.
 - One topic per PR; keep diffs reviewable.
 - Reference the related issue in the PR body.
-- The CI workflow (`.github/workflows/ci.yml`) must pass: install, compile, test, audit.
+- The CI workflow (`.github/workflows/ci.yml`) must pass: install, compile, test, audit, package.
 - Add a CHANGELOG entry under `[Unreleased]` for any user-observable change.
+
+## Releasing
+
+Maintainers only.
+
+1. Branch `release/vX.Y.Z` from the release candidate (or `main`).
+2. Set `version` in `package.json` and `package-lock.json` (`npm version X.Y.Z --no-git-tag-version`).
+3. In `CHANGELOG.md`, rename `[Unreleased]` to `[X.Y.Z] — YYYY-MM-DD`, add a fresh empty `[Unreleased]` above it, and update the compare links at the bottom of the file.
+4. Check that `README.md`, `FEATURE_REFERENCE.md` (Version Scope) and `SECURITY.md` (Supported Versions) are current.
+5. Run `npm test`, `npm run audit`, and `npm run package`. Install the `.vsix` locally (`Extensions: Install from VSIX...`) and smoke-test it.
+6. Do not bump `@types/vscode` above `engines.vscode`. `vsce` refuses to package if it is newer.
+7. Open a PR to `main` using the PR template. After it merges, tag the merge commit `vX.Y.Z` and push the tag.
+8. Publish with `npx vsce publish` (requires a Marketplace PAT for the `parad0x1k` publisher). Then create a GitHub release from the tag with the changelog section as notes and the `.vsix` attached.
 
 ## Reporting Security Issues
 
