@@ -18,6 +18,12 @@ BuildCompanion is a native VS Code extension to trigger, monitor, and debug AWS 
 
 ![Select multiple projects and run a sequential batch deployment](resources/gifs/batch-deploy-demo.gif)
 
+### Build Log Panel
+
+![A queued build's log panel waits for output, streams a failing build with colored phase and error lines, shows the likely cause, then narrows to errors and filters by text](resources/gifs/log-panel-demo.gif)
+
+*Sample build data.*
+
 ## Privacy & Telemetry
 
 This extension makes **no network calls outside the AWS endpoints implied by the active profile and region**, with one opt-in exception: if you enable `codebuild.agentTools.enabled` (default **off**) to let a compatible AI agent (e.g. GitHub Copilot Chat agent mode) discover and call BuildCompanion's agent tools, the inputs and outputs of those tool calls (project names, build status, branch names, and the region in use) are sent to whichever chat model backend you have configured, like any other tool call in that chat session. Agents use the profile and region you already selected in BuildCompanion, and when they do, your profile name is not included in what the model sees. This extension collects **no telemetry** and ships **no analytics SDK**. The `telemetry.telemetryLevel` VS Code setting is respected by default (no-op since no telemetry is sent). All AWS credentials live in your local AWS configuration files or in VS Code's encrypted Secret Storage; they are never written to logs, never transmitted to third parties, and never persisted in plaintext. Credentials never flow through agent tool input/output, regardless of whether agent tools are enabled.
